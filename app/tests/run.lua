@@ -41,6 +41,20 @@ end
 
 local function choose_file(ui, path)
   api.nvim_set_current_win(ui.state.list)
+  local parent = ""
+  local parts = vim.split(path, "/", { plain = true })
+  for index = 1, #parts - 1 do
+    parent = parent .. parts[index] .. "/"
+    if ui.state.collapsed[parent] then
+      for line, row in pairs(ui.state.tree_rows) do
+        if row.directory and row.path == parent then
+          api.nvim_win_set_cursor(0, { line, 0 })
+          vim.fn.maparg("l", "n", false, true).callback()
+          break
+        end
+      end
+    end
+  end
   local selected = false
   for line, row in pairs(ui.state.tree_rows) do
     if row.file and row.file.path == path then
@@ -419,6 +433,197 @@ fi
     equal(ui.state.selected, "internal/catalog/item.go")
     ui.pull_requests(repository)
     finish_task(ui)
+  end)
+
+  test("next marks files viewed, collapses completed folders, and resets edited files", function()
+    local ui = require("review.ui")
+    ui.open(pr)
+    finish_task(ui)
+    choose_file(ui, "internal/catalog/item.go")
+    local buffer = api.nvim_win_get_buf(ui.state.right)
+    local contents = api.nvim_buf_get_lines(buffer, 0, -1, false)
+    api.nvim_buf_set_lines(buffer, -1, -1, false, { "unsaved" })
+    ui.next_file()
+    equal(ui.state.viewed["internal/catalog/item.go"], nil)
+    equal(ui.state.selected, "internal/catalog/item.go")
+    api.nvim_buf_set_lines(buffer, 0, -1, false, contents)
+    vim.bo[buffer].modified = false
+    api.nvim_feedkeys(" n", "xt", false)
+    finish_task(ui)
+    assert(ui.state.viewed["internal/catalog/item.go"])
+    equal(ui.state.collapsed["internal/catalog/"], true)
+    equal(ui.state.selected, "internal/store/postgres.go")
+    ui.next_file()
+    finish_task(ui)
+    equal(ui.state.collapsed["internal/store/"], true)
+    equal(ui.state.collapsed["internal/"], true)
+    for _ = 1, #ui.state.files do
+      ui.next_file()
+      finish_task(ui)
+    end
+    equal(vim.tbl_count(ui.state.viewed), #ui.state.files)
+    local last = ui.state.selected
+    ui.next_file()
+    finish_task(ui)
+    equal(ui.state.selected, last)
+    ui.pull_requests(repository)
+    finish_task(ui)
+    ui.open(pr)
+    finish_task(ui)
+    equal(vim.tbl_count(ui.state.viewed), #ui.state.files)
+    choose_file(ui, "internal/catalog/item.go")
+    api.nvim_set_current_win(ui.state.right)
+    api.nvim_buf_set_lines(0, -1, -1, false, { "var Enabled = true" })
+    vim.cmd("write")
+    finish_task(ui)
+    equal(ui.state.viewed["internal/catalog/item.go"], nil)
+    equal(ui.state.collapsed["internal/catalog/"], false)
+    equal(ui.state.collapsed["internal/"], false)
+    ui.pull_requests(repository)
+    finish_task(ui)
+  end)
+
+  test("canceling commit and push leaves the worktree and index untouched", function()
+    local ui = require("review.ui")
+    ui.open(pr)
+    finish_task(ui)
+    local old_head = vim.trim(core.git(outside, { "rev-parse", "HEAD" }))
+    local old_status = core.git(outside, { "status", "--porcelain=v1", "-z" })
+    local input, select = vim.ui.input, vim.ui.select
+    local confirmed = false
+    vim.ui.input = function(_, done) done("Review changes") end
+    vim.ui.select = function(_, opts, done)
+      assert(opts.prompt:find("acme/example:feature-b", 1, true))
+      confirmed = true
+      done("Cancel")
+    end
+    vim.cmd("ReviewCommitPush")
+    finish_task(ui)
+    assert(vim.wait(1000, function() return confirmed end, 10))
+    vim.ui.input, vim.ui.select = input, select
+    equal(vim.trim(core.git(outside, { "rev-parse", "HEAD" })), old_head)
+    equal(core.git(outside, { "status", "--porcelain=v1", "-z" }), old_status)
+    ui.pull_requests(repository)
+    finish_task(ui)
+  end)
+
+  test("commit and push includes all saved changes and leaves the parent worktree alone", function()
+    local ui = require("review.ui")
+    local old_base = vim.trim(core.run({ "git", "--git-dir=" .. remote, "rev-parse", "feature-a" }))
+    local parent_status = git({ "status", "--porcelain=v1", "-z" })
+    core.git(outside, { "mv", "app.txt", "renamed app.txt" })
+    put(outside .. "/new [literal].txt", "saved addition\n")
+    vim.uv.fs_unlink(outside .. "/ahead.txt")
+    ui.open(pr)
+    finish_task(ui)
+    local input, select = vim.ui.input, vim.ui.select
+    local calls = 0
+    vim.ui.input = function(_, done)
+      calls = calls + 1
+      done("Apply review edits")
+    end
+    vim.ui.select = function(_, opts, done)
+      assert(opts.prompt:find("acme/example:feature-b", 1, true))
+      assert(opts.prompt:find("Apply review edits", 1, true))
+      done("Commit and push")
+    end
+    local buffer = api.nvim_win_get_buf(ui.state.right)
+    local contents = api.nvim_buf_get_lines(buffer, 0, -1, false)
+    api.nvim_buf_set_lines(buffer, -1, -1, false, { "unsaved" })
+    ui.commit_push()
+    equal(calls, 0)
+    api.nvim_buf_set_lines(buffer, 0, -1, false, contents)
+    vim.bo[buffer].modified = false
+    api.nvim_feedkeys(" cc", "xt", false)
+    finish_task(ui)
+    vim.ui.input, vim.ui.select = input, select
+    equal(calls, 1)
+    equal(core.git(outside, { "status", "--porcelain=v1" }), "")
+    local pushed = vim.trim(core.run({ "git", "--git-dir=" .. remote, "rev-parse", "feature-b" }))
+    equal(pushed, vim.trim(core.git(outside, { "rev-parse", "HEAD" })))
+    equal(core.git(outside, { "show", "HEAD:new [literal].txt" }), "saved addition\n")
+    assert(core.git(outside, { "show", "HEAD:renamed app.txt" }):find("unstaged", 1, true))
+    local _, removed = core.git(outside, { "cat-file", "-e", "HEAD:ahead.txt" }, true)
+    assert(removed ~= 0)
+    equal(git({ "status", "--porcelain=v1", "-z" }), parent_status)
+    equal(vim.trim(core.run({ "git", "--git-dir=" .. remote, "rev-parse", "feature-a" })), old_base)
+  end)
+
+  test("rejected pushes preserve the local commit and retry does not create another commit", function()
+    local ui = require("review.ui")
+    local publisher = root .. "/publisher"
+    core.git(publisher, { "fetch", "origin", "feature-b" })
+    core.git(publisher, { "switch", "-c", "remote-advance", "FETCH_HEAD" })
+    put(publisher .. "/remote-side.txt", "remote advance\n")
+    core.git(publisher, { "add", "remote-side.txt" })
+    core.git(publisher, { "commit", "-m", "Advance remote" })
+    core.git(publisher, { "push", "origin", "HEAD:refs/heads/feature-b" })
+    local remote_head = vim.trim(core.run({ "git", "--git-dir=" .. remote, "rev-parse", "feature-b" }))
+    put(outside .. "/retry.txt", "local retry\n")
+    local input, select, notify = vim.ui.input, vim.ui.select, vim.notify
+    local calls, failure = 0, nil
+    vim.ui.input = function(_, done)
+      calls = calls + 1
+      done("Preserve local commit")
+    end
+    vim.ui.select = function(_, _, done) done("Commit and push") end
+    vim.notify = function(message, level)
+      if level == vim.log.levels.ERROR then failure = message end
+    end
+    ui.commit_push()
+    finish_task(ui)
+    assert(failure and failure:find("Push failed. Local commit", 1, true))
+    assert(failure:find("rejected", 1, true))
+    equal(vim.trim(core.run({ "git", "--git-dir=" .. remote, "rev-parse", "feature-b" })), remote_head)
+    equal(core.git(outside, { "status", "--porcelain=v1" }), "")
+    equal(core.git(outside, { "show", "HEAD:retry.txt" }), "local retry\n")
+    core.git(outside, { "fetch", "origin", "feature-b" })
+    core.git(outside, { "merge", "--no-edit", "FETCH_HEAD" })
+    local merged = vim.trim(core.git(outside, { "rev-parse", "HEAD" }))
+    ui.commit_push()
+    finish_task(ui)
+    vim.ui.input, vim.ui.select, vim.notify = input, select, notify
+    equal(calls, 1)
+    equal(vim.trim(core.git(outside, { "rev-parse", "HEAD" })), merged)
+    equal(vim.trim(core.run({ "git", "--git-dir=" .. remote, "rev-parse", "feature-b" })), merged)
+    ui.pull_requests(repository)
+    finish_task(ui)
+  end)
+
+  test("a fork pushes to its PR source branch even when the local branch has another name", function()
+    local fork_remote = root .. "/fork.git"
+    core.run({ "git", "init", "--bare", fork_remote })
+    git({ "push", fork_remote, child .. ":refs/heads/feature-a" })
+    local fork = vim.deepcopy(pr)
+    fork.number, fork.head.ref = 4, "feature-a"
+    fork.head.repo = { full_name = "fork/example", ssh_url = fork_remote }
+    local opened = core.prepare(repository, fork, root .. "/managed")
+    equal(opened.branch, "pr-review/4")
+    local parent_head = sha("feature-a")
+    put(opened.path .. "/fork-only.txt", "fork change\n")
+    local pushed = core.commit_and_push(opened, core.commit_plan(opened, fork), "Update fork review")
+    equal(vim.trim(core.run({ "git", "--git-dir=" .. fork_remote, "rev-parse", "feature-a" })), pushed)
+    equal(sha("feature-a"), parent_head)
+    equal(vim.trim(core.run({ "git", "--git-dir=" .. remote, "rev-parse", "feature-a" })), parent_head)
+  end)
+
+  test("unresolved merge conflicts cannot be committed by the shortcut", function()
+    local publisher = root .. "/publisher"
+    put(outside .. "/renamed app.txt", "local conflict\n")
+    core.git(outside, { "add", "renamed app.txt" })
+    core.git(outside, { "commit", "-m", "Local conflict case" })
+    put(publisher .. "/renamed app.txt", "remote conflict\n")
+    core.git(publisher, { "add", "renamed app.txt" })
+    core.git(publisher, { "commit", "-m", "Remote conflict case" })
+    core.git(outside, { "fetch", publisher, "HEAD" })
+    local _, conflict = core.git(outside, { "merge", "--no-commit", "FETCH_HEAD" }, true)
+    assert(conflict ~= 0)
+    local old_head = vim.trim(core.git(outside, { "rev-parse", "HEAD" }))
+    local ok, message = pcall(core.commit_plan, session, pr)
+    equal(ok, false)
+    assert(message:find("Resolve merge conflicts", 1, true))
+    equal(vim.trim(core.git(outside, { "rev-parse", "HEAD" })), old_head)
+    core.git(outside, { "merge", "--abort" })
   end)
 
   test("PR navigation reuses recent lists and refresh bypasses the cache", function()

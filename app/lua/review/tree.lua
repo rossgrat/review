@@ -1,6 +1,7 @@
 local M = {}
 
-function M.rows(files, collapsed)
+function M.rows(files, collapsed, viewed)
+  viewed = viewed or {}
   local root = { children = {} }
   for _, file in ipairs(files) do
     local node, path = root, ""
@@ -17,9 +18,11 @@ function M.rows(files, collapsed)
           directory = directory,
           children = {},
           count = 0,
+          viewed = 0,
         }
       node = node.children[key]
       node.count = node.count + 1
+      node.viewed = node.viewed + (viewed[file.path] and 1 or 0)
     end
     node.file = file
   end

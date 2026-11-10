@@ -2,7 +2,7 @@ local core = require("review.core")
 local tree = require("review.tree")
 local M = {}
 local api = vim.api
-local state = { pr_cache = {} }
+local state = { pr_cache = {}, reviews = {} }
 local decorations = api.nvim_create_namespace("PRReviewPresentation")
 local selection = api.nvim_create_namespace("PRReviewSelection")
 
@@ -32,7 +32,7 @@ local function scratch(name, text)
   return buffer
 end
 
-local function task(label, fn, dialog)
+local function task(label, fn, dialog, on_success)
   if state.busy then return end
   state.busy = true
   local loading
@@ -54,23 +54,24 @@ local function task(label, fn, dialog)
   end
   vim.schedule(function()
     coroutine.wrap(function()
-      local ok, err = pcall(fn)
+      local ok, result = pcall(fn)
       if loading and api.nvim_win_is_valid(loading) then api.nvim_win_close(loading, true) end
       state.loading = nil
       state.busy = false
       if not ok then
-        vim.notify(tostring(err), vim.log.levels.ERROR)
+        vim.notify(tostring(result), vim.log.levels.ERROR)
       else
         vim.cmd("echo ''")
+        if on_success then on_success(result) end
       end
     end)()
   end)
 end
 
-local function saved()
+local function saved(message)
   for _, buffer in ipairs(api.nvim_list_bufs()) do
     if vim.bo[buffer].modified then
-      vim.notify("Save your edits before changing PRs.", vim.log.levels.WARN)
+      vim.notify(message or "Save your edits before changing PRs.", vim.log.levels.WARN)
       return false
     end
   end
@@ -275,8 +276,9 @@ end
 local function render_files(focus)
   local current = state.tree_rows and state.tree_rows[api.nvim_win_get_cursor(state.list)[1]]
   focus = focus or current and current.path or state.selected
-  local added, modified, deleted = 0, 0, 0
+  local added, modified, deleted, viewed = 0, 0, 0, 0
   for _, file in ipairs(state.files) do
+    if state.viewed[file.path] then viewed = viewed + 1 end
     if file.status == "A" or file.status == "?" then
       added = added + 1
     elseif file.status == "D" then
@@ -297,11 +299,12 @@ local function render_files(focus)
       modified,
       deleted
     ),
+    string.format(" %d / %d viewed", viewed, #state.files),
     "",
   }
   state.tree_rows = {}
-  local cursor = 6
-  for _, row in ipairs(tree.rows(state.files, state.collapsed)) do
+  local cursor = 7
+  for _, row in ipairs(tree.rows(state.files, state.collapsed, state.viewed)) do
     lines[#lines + 1] = row.text
     state.tree_rows[#lines] = row
     if row.path == focus then cursor = #lines end
@@ -312,11 +315,20 @@ local function render_files(focus)
   highlight(state.file_buffer, 2, "ReviewTitle")
   highlight(state.file_buffer, 3, "ReviewMuted")
   highlight(state.file_buffer, 4, "ReviewMuted")
+  highlight(state.file_buffer, 5, "ReviewMuted")
   for line, row in pairs(state.tree_rows) do
-    highlight(state.file_buffer, line, row.directory and "ReviewAccent" or "ReviewFile")
+    local complete = row.viewed == row.count
+    highlight(
+      state.file_buffer,
+      line,
+      complete and "ReviewMuted" or row.directory and "ReviewAccent" or "ReviewFile"
+    )
     highlight(state.file_buffer, line, "ReviewBorder", 0, row.guides)
-    local status = row.directory and tostring(row.count) or row.file.status:sub(1, 1)
-    local group = row.directory and "ReviewMuted"
+    local status = row.directory and string.format("%d/%d", row.viewed, row.count)
+      or row.file.status:sub(1, 1)
+    if complete then status = "✓ " .. status end
+    local group = complete and "ReviewAdded"
+      or row.directory and "ReviewMuted"
       or status == "D" and "ReviewDeleted"
       or (status == "A" or status == "?") and "ReviewAdded"
       or "ReviewChanged"
@@ -328,9 +340,131 @@ local function render_files(focus)
   api.nvim_win_set_cursor(state.list, { cursor, 0 })
 end
 
+local function file_stamp(file)
+  local stat = vim.uv.fs_lstat(state.session.path .. "/" .. file.path)
+  return table.concat({
+    state.session.base,
+    stat and stat.mode or 0,
+    stat and stat.size or 0,
+    stat and stat.mtime.sec or 0,
+    stat and stat.mtime.nsec or 0,
+  }, ":")
+end
+
+local function update_viewed()
+  local present = {}
+  for _, file in ipairs(state.files) do
+    present[file.path] = true
+    if state.viewed[file.path] and state.viewed[file.path] ~= file_stamp(file) then
+      state.viewed[file.path] = nil
+    end
+  end
+  for path in pairs(state.viewed) do
+    if not present[path] then state.viewed[path] = nil end
+  end
+  for _, row in ipairs(tree.rows(state.files, {}, state.viewed)) do
+    if row.directory then
+      if row.viewed == row.count then
+        state.collapsed[row.path], state.auto_collapsed[row.path] = true, true
+      elseif state.auto_collapsed[row.path] then
+        state.collapsed[row.path], state.auto_collapsed[row.path] = false, nil
+      end
+    end
+  end
+end
+
 local function files()
   state.files = core.changes(state.session)
+  update_viewed()
   render_files()
+end
+
+function M.next_file()
+  if not state.session or state.busy then return end
+  if vim.bo[api.nvim_win_get_buf(state.right)].modified then
+    vim.notify("Save the current file before marking it viewed.", vim.log.levels.WARN)
+    return
+  end
+  task("Next file", function()
+    local ordered, current = {}, 0
+    for _, row in ipairs(tree.rows(state.files, {}, state.viewed)) do
+      if row.file then
+        ordered[#ordered + 1] = row.file
+        if row.file.path == state.selected then current = #ordered end
+      end
+    end
+    if current > 0 then state.viewed[state.selected] = file_stamp(ordered[current]) end
+    update_viewed()
+    for offset = 1, #ordered do
+      local file = ordered[(current + offset - 1) % #ordered + 1]
+      if not state.viewed[file.path] then
+        local parent = vim.fs.dirname(file.path)
+        while parent and parent ~= "." do
+          state.collapsed[parent .. "/"] = false
+          parent = vim.fs.dirname(parent)
+        end
+        render_files(file.path)
+        show_file(file)
+        return
+      end
+    end
+    render_files()
+    vim.schedule(function() vim.notify("All files viewed.") end)
+  end)
+end
+
+function M.commit_push()
+  if not state.session or state.busy or not saved("Save your edits before committing and pushing.") then
+    return
+  end
+  local session = state.session
+  task(
+    "Preparing commit and push...",
+    function() return core.commit_plan(session, core.pull_request(state.repo, session.pr.number)) end,
+    true,
+    function(plan)
+      local function confirm(message)
+        if message == nil and #plan.files > 0 then return end
+        if message and vim.trim(message) == "" then return end
+        local prompt = string.format("Commit %d changed files and push to %s?", #plan.files, plan.destination)
+        if #plan.files == 0 then
+          prompt = "No changes to commit. Push existing commits to " .. plan.destination .. "?"
+        end
+        if message then prompt = prompt .. "\nMessage: " .. message end
+        vim.ui.select({ "Commit and push", "Cancel" }, { prompt = prompt }, function(choice)
+          if
+            choice ~= "Commit and push"
+            or state.session ~= session
+            or not saved("Save your edits before committing and pushing.")
+          then
+            return
+          end
+          task(
+            "Committing and pushing...",
+            function()
+              local commit = core.commit_and_push(session, plan, message)
+              session.ahead, session.behind, session.pr.head.sha = 0, 0, commit
+              for _, win in ipairs({ state.list, state.left, state.right }) do
+                vim.wo[win].statusline = state.statusline
+              end
+              state.pr_cache[state.repo.common or state.repo.path] = nil
+              return commit
+            end,
+            true,
+            function(commit)
+              M.refresh()
+              vim.notify("Pushed " .. commit:sub(1, 8) .. " to " .. plan.destination)
+            end
+          )
+        end)
+      end
+      if #plan.files == 0 then
+        confirm(nil)
+      else
+        vim.ui.input({ prompt = "Commit message: " }, confirm)
+      end
+    end
+  )
 end
 
 local function tree_action(action)
@@ -383,6 +517,9 @@ end
 local function review(session)
   state.session = session
   state.selected, state.tree_rows, state.collapsed = nil, nil, {}
+  local key = (state.repo.common or state.repo.path) .. "/" .. session.pr.number
+  state.reviews[key] = state.reviews[key] or {}
+  state.viewed, state.auto_collapsed = state.reviews[key], {}
   vim.cmd("silent only")
   state.list = api.nvim_get_current_win()
   state.file_buffer = scratch("files")
@@ -412,7 +549,8 @@ local function review(session)
     session.pr.base.ref
   )
   vim.o.statusline = status:gsub("%%", "%%%%"):gsub("%%%%<", "%%<")
-    .. " %= Space-f files  Space-p PRs  Space-r refresh  Space-q quit "
+    .. " %= Space-n next  Space-cc commit/push  Space-q quit "
+  state.statusline = vim.o.statusline
   if session.behind > 0 or session.ahead > 0 then
     vim.o.statusline = vim.o.statusline
       .. string.format("  [local: %d ahead, %d behind GitHub]", session.ahead, session.behind)
@@ -431,7 +569,14 @@ local function review(session)
   map(state.file_buffer, "q", function() M.pull_requests(state.repo) end)
   map(state.file_buffer, "r", M.refresh)
   files()
-  if state.files[1] then show_file(state.files[1]) end
+  local first
+  for _, row in ipairs(tree.rows(state.files, {}, state.viewed)) do
+    if row.file and not state.viewed[row.path] then
+      first = row.file
+      break
+    end
+  end
+  if first or state.files[1] then show_file(first or state.files[1]) end
   local group = api.nvim_create_augroup("PRReviewRefresh", { clear = true })
   api.nvim_create_autocmd("BufWritePost", {
     group = group,
@@ -455,8 +600,12 @@ function M.start(directory)
   state.directory = vim.fs.normalize(vim.fn.fnamemodify(directory, ":p"))
   vim.g.mapleader = " "
   api.nvim_create_user_command("ReviewQuit", "qall<bang>", { bang = true, force = true })
+  api.nvim_create_user_command("ReviewNext", M.next_file, { force = true })
+  api.nvim_create_user_command("ReviewCommitPush", M.commit_push, { force = true })
   vim.cmd([[cnoreabbrev <expr> q getcmdtype() == ':' && getcmdline() ==# 'q' ? 'ReviewQuit' : 'q']])
   vim.keymap.set("n", "<leader>q", "<cmd>ReviewQuit<CR>", { silent = true })
+  vim.keymap.set("n", "<leader>n", M.next_file, { silent = true })
+  vim.keymap.set("n", "<leader>cc", M.commit_push, { silent = true })
   vim.keymap.set("n", "<leader>f", function()
     if state.list and api.nvim_win_is_valid(state.list) then api.nvim_set_current_win(state.list) end
   end)

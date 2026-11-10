@@ -19,7 +19,7 @@ function M.run(args, cwd, allow_failure, input)
     local message = vim.trim(result.stderr or "")
     error(message ~= "" and message or args[1] .. " failed with exit code " .. result.code, 0)
   end
-  return result.stdout or "", result.code
+  return result.stdout or "", result.code, result.stderr or ""
 end
 
 function M.git(path, args, allow_failure, input)
@@ -169,9 +169,13 @@ local function slug(url)
     and url:match("github%.com[:/]([^/]+/[^/]+)"):gsub("%.git$", "")
 end
 
-local function remote_for(path, repository)
+local function remote_for(path, repository, push)
   for remote in M.git(path, { "remote" }):gmatch("[^\n]+") do
-    if slug(trimmed(path, { "remote", "get-url", remote })) == repository.full_name then return remote end
+    local args = { "remote", "get-url" }
+    if push then vim.list_extend(args, { "--push", "--all" }) end
+    args[#args + 1] = remote
+    local urls = vim.split(trimmed(path, args), "\n", { trimempty = true })
+    if #urls == 1 and slug(urls[1]) == repository.full_name then return remote end
   end
   return repository.ssh_url
 end
@@ -245,7 +249,83 @@ function M.prepare(repo, pr, worktree_root)
   local base = trimmed(tree, { "merge-base", base_ref, "HEAD" })
   local counts = trimmed(tree, { "rev-list", "--left-right", "--count", head_ref .. "...HEAD" })
   local behind, ahead = counts:match("(%d+)%s+(%d+)")
-  return { path = tree, base = base, pr = pr, ahead = tonumber(ahead), behind = tonumber(behind) }
+  return {
+    path = tree,
+    base = base,
+    pr = pr,
+    branch = branch,
+    ahead = tonumber(ahead),
+    behind = tonumber(behind),
+  }
+end
+
+function M.commit_plan(session, pr)
+  assert(
+    trimmed(session.path, { "branch", "--show-current" }) == session.branch,
+    "The worktree branch changed. Reopen the PR before committing."
+  )
+  assert(pr.head.repo and pr.head.repo ~= vim.NIL, "The PR source repository no longer exists")
+  local status = M.git(session.path, { "status", "--porcelain=v1", "-z", "--untracked-files=all" })
+  local fields = vim.split(status, "\0", { plain = true, trimempty = true })
+  local files, stage, seen, index = {}, {}, {}, 1
+  while index <= #fields do
+    local code, path = fields[index]:sub(1, 2), fields[index]:sub(4)
+    assert(
+      not code:find("U", 1, true) and code ~= "AA" and code ~= "DD",
+      "Resolve merge conflicts before committing."
+    )
+    if not seen[path] then
+      files[#files + 1], seen[path] = path, true
+    end
+    local renamed = code:find("R", 1, true) or code:find("C", 1, true)
+    if code == "??" or code:sub(2, 2) ~= " " then
+      stage[#stage + 1] = path
+      if code:sub(2, 2) == "R" then stage[#stage + 1] = fields[index + 1] end
+    end
+    index = index + (renamed and 2 or 1)
+  end
+  return {
+    files = files,
+    stage = stage,
+    status = status,
+    head = trimmed(session.path, { "rev-parse", "HEAD" }),
+    remote = remote_for(session.path, pr.head.repo, true),
+    destination = pr.head.repo.full_name .. ":" .. pr.head.ref,
+    ref = "refs/heads/" .. pr.head.ref,
+  }
+end
+
+function M.commit_and_push(session, plan, message)
+  assert(
+    trimmed(session.path, { "branch", "--show-current" }) == session.branch,
+    "The worktree branch changed. Reopen the PR before committing."
+  )
+  assert(
+    trimmed(session.path, { "rev-parse", "HEAD" }) == plan.head
+      and M.git(session.path, { "status", "--porcelain=v1", "-z", "--untracked-files=all" }) == plan.status,
+    "The worktree changed. Run commit and push again."
+  )
+  if #plan.files > 0 then
+    assert(message and vim.trim(message) ~= "", "Enter a commit message.")
+    if #plan.stage > 0 then
+      M.git(session.path, vim.list_extend({ "--literal-pathspecs", "add", "--" }, plan.stage))
+    end
+    local _, clean = M.git(session.path, { "diff", "--cached", "--quiet" }, true)
+    if clean ~= 0 then M.git(session.path, { "commit", "-m", message }) end
+  end
+  local commit = trimmed(session.path, { "rev-parse", "HEAD" })
+  local output, code, stderr =
+    M.git(session.path, { "push", "--", plan.remote, commit .. ":" .. plan.ref }, true)
+  if code ~= 0 then
+    error(
+      "Push failed. Local commit "
+        .. commit:sub(1, 8)
+        .. " is preserved. Resolve the push error and run commit and push again.\n"
+        .. (stderr ~= "" and stderr or output),
+      0
+    )
+  end
+  return commit
 end
 
 local function unchanged(session, path)

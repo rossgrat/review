@@ -65,6 +65,8 @@ The file list refreshes after each save.
 | Key | Action |
 | --- | --- |
 | Space, then `f` | Focus the changed files |
+| Space, then `n` | Mark the current file viewed and open the next unviewed file |
+| Space, then `c`, then `c` | Commit and push saved changes in the selected PR worktree |
 | Space, then `p` | Return to the PR list |
 | Space, then `r` | Refresh local changes |
 | Space, then `q` | Quit Review |
@@ -75,6 +77,37 @@ Save your edits before changing PRs.
 The application blocks navigation between PRs while a buffer contains unsaved edits.
 Quitting also stops if any buffer contains unsaved edits.
 Use `:q!` to exit and discard unsaved edits.
+
+## Review progress
+
+Save the current file before pressing Space, then `n`.
+The shortcut marks the current file viewed and opens the next unviewed file in tree order.
+Viewed files show a check mark, and completed directories collapse.
+The sidebar shows the viewed count for each directory and the whole PR.
+After the last file, Review reports that all files are viewed.
+You can also use `:ReviewNext`.
+
+Viewed marks remain local for the current Review session and survive switching PRs.
+Saving a viewed file makes it unviewed again and reopens its completed directories.
+Changing the comparison base also clears affected marks.
+
+## Commit and push
+
+Save all edits before pressing Space, then `c`, then `c`.
+You can also use `:ReviewCommitPush`.
+Enter a commit message.
+Approve the confirmation that shows the changed file count, commit message, and push destination.
+Cancel the prompt to leave the index and commit history unchanged.
+
+The command includes all saved, uncommitted changes in the selected PR worktree, including existing staged changes.
+It stages explicit file paths and pushes to the PR source repository and branch.
+The command uses a normal push and stops if Git rejects it.
+It refuses unresolved merge conflicts or a changed worktree branch.
+
+If the push fails, the local commit remains available.
+Resolve the push error before using the shortcut again.
+If no uncommitted changes remain, the shortcut asks for approval and pushes existing commits.
+It does not create another commit.
 
 ## Loading
 
@@ -109,7 +142,8 @@ It preserves existing commits and local edits.
 If no worktree exists, it creates one under the separate application's data directory.
 If a fork's branch name conflicts locally, it uses `pr-review/<number>`.
 The status line shows when the local branch differs from the GitHub branch.
-The application does not automatically pull, stash, commit, or push changes.
+The application does not automatically pull or stash changes.
+Commits and pushes require the shortcut and its confirmation.
 
 Repository discovery searches nested directories and groups linked worktrees by repository.
 It skips hidden directories, symbolic-link directories, and `node_modules`.
