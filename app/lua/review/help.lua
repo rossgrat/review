@@ -23,6 +23,7 @@ REVIEW
   Space i               Show or hide these instructions
   Space f               Focus the changed files
   Space n               Mark this file viewed and open the next unviewed file
+  Space b               Undo the last Next step and restore its viewed state
   Space p               Show the current repository's open PRs
   Space r               Refresh local changes in the open PR
   Space c c             Commit all saved worktree changes and push (asks first)
@@ -59,6 +60,7 @@ DIFF AND PANES
 COMMANDS
   :ReviewHelp           Show or hide these instructions
   :ReviewNext           Mark viewed and open the next unviewed file
+  :ReviewBack           Undo the last Next step for this PR
   :ReviewCommitPush     Commit and push saved worktree changes (asks first)
   :ReviewQuit           Quit the whole application
   :q / :qall            Quit Review and protect unsaved edits

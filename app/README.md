@@ -74,6 +74,7 @@ The file list refreshes after each save.
 | Space, then `i` | Show or hide all instructions |
 | Space, then `f` | Focus the changed files |
 | Space, then `n` | Mark the current file viewed and open the next unviewed file |
+| Space, then `b` | Undo the last Next step and return to that file |
 | Space, then `c`, then `c` | Commit and push saved changes in the selected PR worktree |
 | Space, then `p` | Return to the PR list |
 | Space, then `r` | Refresh local changes |
@@ -94,6 +95,13 @@ Viewed files show a check mark, and completed directories collapse.
 The sidebar shows the viewed count for each directory and the whole PR.
 After the last file, Review reports that all files are viewed.
 You can also use `:ReviewNext`.
+
+Press Space, then `b` to undo the last Next step for the current PR.
+You can also use `:ReviewBack`.
+Back restores the previous file, cursor position, and viewed state, and reopens its directory.
+Unsaved edits in the file you leave stay in their buffer.
+Repeated Back presses undo earlier steps.
+Steps remain available while switching PRs in this Review session.
 
 Viewed marks remain local for the current Review session and survive switching PRs.
 Saving a viewed file makes it unviewed again and reopens its completed directories.

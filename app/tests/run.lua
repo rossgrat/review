@@ -419,12 +419,14 @@ fi
         "Space i",
         "Space f",
         "Space n",
+        "Space b",
         "Space p",
         "Space r",
         "Space c c",
         "Space q",
         ":ReviewHelp",
         ":ReviewNext",
+        ":ReviewBack",
         ":ReviewCommitPush",
         ":ReviewQuit",
         ":wall",
@@ -655,6 +657,116 @@ fi
     equal(ui.state.viewed["internal/catalog/item.go"], nil)
     equal(ui.state.collapsed["internal/catalog/"], false)
     equal(ui.state.collapsed["internal/"], false)
+    ui.pull_requests(repository)
+    finish_task(ui)
+  end)
+
+  test("Back restores review steps and cursor positions while preserving unsaved edits", function()
+    local ui = require("review.ui")
+    local back_pr = vim.deepcopy(pr)
+    back_pr.number = 6
+    put(vim.env.PR_REVIEW_TEST_PR, vim.json.encode(back_pr))
+    ui.open(back_pr)
+    finish_task(ui)
+    choose_file(ui, "internal/catalog/item.go")
+    api.nvim_win_set_cursor(ui.state.right, { 4, 2 })
+    local cursor = api.nvim_win_get_cursor(ui.state.right)
+    local old_head = vim.trim(core.git(outside, { "rev-parse", "HEAD" }))
+    ui.next_file()
+    finish_task(ui)
+    ui.next_file()
+    finish_task(ui)
+    equal(ui.state.collapsed["internal/"], true)
+    choose_file(ui, "internal/catalog/item.go")
+    ui.next_file()
+    finish_task(ui)
+    api.nvim_feedkeys(" b", "xt", false)
+    finish_task(ui)
+    equal(ui.state.selected, "internal/catalog/item.go")
+    assert(ui.state.viewed["internal/catalog/item.go"], "Back must preserve a preexisting viewed mark")
+    api.nvim_feedkeys(" b", "xt", false)
+    finish_task(ui)
+    equal(ui.state.selected, "internal/store/postgres.go")
+    equal(ui.state.viewed["internal/store/postgres.go"], nil)
+    assert(ui.state.viewed["internal/catalog/item.go"])
+    equal(ui.state.collapsed["internal/"], false)
+    equal(ui.state.collapsed["internal/store/"], false)
+    vim.cmd("ReviewBack")
+    finish_task(ui)
+    equal(ui.state.selected, "internal/catalog/item.go")
+    equal(ui.state.viewed["internal/catalog/item.go"], nil)
+    equal(ui.state.collapsed["internal/catalog/"], false)
+    equal(api.nvim_win_get_cursor(ui.state.right), cursor)
+    ui.undo_next()
+    finish_task(ui)
+    equal(ui.state.selected, "internal/catalog/item.go")
+    ui.next_file()
+    finish_task(ui)
+    local buffer = api.nvim_win_get_buf(ui.state.right)
+    local contents = api.nvim_buf_get_lines(buffer, 0, -1, false)
+    api.nvim_buf_set_lines(buffer, -1, -1, false, { "var Pending = true" })
+    api.nvim_feedkeys(" b", "xt", false)
+    finish_task(ui)
+    equal(ui.state.selected, "internal/catalog/item.go")
+    equal(vim.bo[buffer].modified, true)
+    equal(api.nvim_buf_is_loaded(buffer), true)
+    equal(api.nvim_buf_get_lines(buffer, -2, -1, false), { "var Pending = true" })
+    equal(get(outside .. "/internal/store/postgres.go"), "package store\n")
+    equal(vim.trim(core.git(outside, { "rev-parse", "HEAD" })), old_head)
+    api.nvim_buf_set_lines(buffer, 0, -1, false, contents)
+    vim.bo[buffer].modified = false
+    put(vim.env.PR_REVIEW_TEST_PR, vim.json.encode(pr))
+    ui.pull_requests(repository)
+    finish_task(ui)
+  end)
+
+  test("Back handles review completion and keeps history scoped to the PR and comparison base", function()
+    local ui = require("review.ui")
+    local back_pr = vim.deepcopy(pr)
+    back_pr.number = 8
+    put(vim.env.PR_REVIEW_TEST_PR, vim.json.encode(back_pr))
+    ui.open(back_pr)
+    finish_task(ui)
+    for _ = 1, #ui.state.files do
+      ui.next_file()
+      finish_task(ui)
+    end
+    local last = ui.state.selected
+    local steps = #ui.state.history
+    ui.next_file()
+    finish_task(ui)
+    equal(#ui.state.history, steps)
+    ui.undo_next()
+    finish_task(ui)
+    equal(ui.state.selected, last)
+    equal(ui.state.viewed[last], nil)
+    equal(vim.tbl_count(ui.state.viewed), #ui.state.files - 1)
+    ui.next_file()
+    finish_task(ui)
+    local other = vim.deepcopy(pr)
+    other.number, other.head.ref = 9, "fresh"
+    put(vim.env.PR_REVIEW_TEST_PR, vim.json.encode(other))
+    ui.open(other)
+    finish_task(ui)
+    local selected = ui.state.selected
+    ui.undo_next()
+    finish_task(ui)
+    equal(ui.state.selected, selected)
+    equal(vim.tbl_count(ui.state.viewed), 0)
+    put(vim.env.PR_REVIEW_TEST_PR, vim.json.encode(back_pr))
+    ui.open(back_pr)
+    finish_task(ui)
+    ui.undo_next()
+    finish_task(ui)
+    equal(ui.state.selected, last)
+    equal(ui.state.viewed[last], nil)
+    back_pr.base.ref, back_pr.base.sha = "main", sha("main")
+    put(vim.env.PR_REVIEW_TEST_PR, vim.json.encode(back_pr))
+    ui.open(back_pr)
+    finish_task(ui)
+    equal(#ui.state.history, 0)
+    equal(vim.tbl_count(ui.state.viewed), 0)
+    put(vim.env.PR_REVIEW_TEST_PR, vim.json.encode(pr))
     ui.pull_requests(repository)
     finish_task(ui)
   end)

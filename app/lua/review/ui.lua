@@ -3,7 +3,7 @@ local tree = require("review.tree")
 local help = require("review.help")
 local M = {}
 local api = vim.api
-local state = { pr_cache = {}, reviews = {} }
+local state = { pr_cache = {}, reviews = {}, review_history = {} }
 local decorations = api.nvim_create_namespace("PRReviewPresentation")
 local selection = api.nvim_create_namespace("PRReviewSelection")
 
@@ -381,6 +381,16 @@ local function files()
   render_files()
 end
 
+local function open_review_file(file)
+  local parent = vim.fs.dirname(file.path)
+  while parent and parent ~= "." do
+    state.collapsed[parent .. "/"] = false
+    parent = vim.fs.dirname(parent)
+  end
+  render_files(file.path)
+  show_file(file)
+end
+
 function M.next_file()
   if not state.session or state.busy then return end
   if vim.bo[api.nvim_win_get_buf(state.right)].modified then
@@ -395,23 +405,57 @@ function M.next_file()
         if row.file.path == state.selected then current = #ordered end
       end
     end
-    if current > 0 then state.viewed[state.selected] = file_stamp(ordered[current]) end
+    local step
+    if current > 0 then
+      step = {
+        path = state.selected,
+        viewed = state.viewed[state.selected],
+        cursor = api.nvim_win_get_cursor(state.right),
+      }
+      state.viewed[state.selected] = file_stamp(ordered[current])
+    end
     update_viewed()
+    local next_file
     for offset = 1, #ordered do
       local file = ordered[(current + offset - 1) % #ordered + 1]
       if not state.viewed[file.path] then
-        local parent = vim.fs.dirname(file.path)
-        while parent and parent ~= "." do
-          state.collapsed[parent .. "/"] = false
-          parent = vim.fs.dirname(parent)
-        end
-        render_files(file.path)
-        show_file(file)
-        return
+        next_file = file
+        break
       end
+    end
+    if step and (step.viewed ~= state.viewed[step.path] or next_file and next_file.path ~= step.path) then
+      state.history[#state.history + 1] = step
+    end
+    if next_file then
+      open_review_file(next_file)
+      return
     end
     render_files()
     vim.schedule(function() vim.notify("All files viewed.") end)
+  end)
+end
+
+function M.undo_next()
+  if not state.session or state.busy then return end
+  task("Undo next file", function()
+    local step = table.remove(state.history)
+    if not step then
+      vim.schedule(function() vim.notify("No review step to undo.") end)
+      return
+    end
+    for _, file in ipairs(state.files) do
+      if file.path == step.path then
+        state.viewed[file.path] = step.viewed
+        update_viewed()
+        open_review_file(file)
+        local buffer = api.nvim_win_get_buf(state.right)
+        local row = math.min(step.cursor[1], api.nvim_buf_line_count(buffer))
+        local line = api.nvim_buf_get_lines(buffer, row - 1, row, false)[1]
+        api.nvim_win_set_cursor(state.right, { row, math.min(step.cursor[2], #line) })
+        return
+      end
+    end
+    vim.schedule(function() vim.notify("The previous file is no longer in the diff.") end)
   end)
 end
 
@@ -522,6 +566,12 @@ local function review(session)
   local key = (state.repo.common or state.repo.path) .. "/" .. session.pr.number
   state.reviews[key] = state.reviews[key] or {}
   state.viewed, state.auto_collapsed = state.reviews[key], {}
+  local history = state.review_history[key]
+  if not history or history.base ~= session.base then
+    history = { base = session.base, steps = {} }
+    state.review_history[key] = history
+  end
+  state.history = history.steps
   vim.cmd("silent only")
   state.list = api.nvim_get_current_win()
   state.file_buffer = scratch("files")
@@ -551,7 +601,7 @@ local function review(session)
     session.pr.base.ref
   )
   vim.o.statusline = status:gsub("%%", "%%%%"):gsub("%%%%<", "%%<")
-    .. " %= Space-i help  Space-n next  Space-cc commit/push  Space-q quit "
+    .. " %= Space: i help  b back  n next  cc commit/push  q quit "
   state.statusline = vim.o.statusline
   if session.behind > 0 or session.ahead > 0 then
     vim.o.statusline = vim.o.statusline
@@ -603,6 +653,7 @@ function M.start(directory)
   vim.g.mapleader = " "
   api.nvim_create_user_command("ReviewQuit", "qall<bang>", { bang = true, force = true })
   api.nvim_create_user_command("ReviewNext", M.next_file, { force = true })
+  api.nvim_create_user_command("ReviewBack", M.undo_next, { force = true })
   api.nvim_create_user_command("ReviewCommitPush", M.commit_push, { force = true })
   local function instructions()
     if not state.busy then help.toggle() end
@@ -615,6 +666,7 @@ function M.start(directory)
   end, { silent = true })
   vim.keymap.set("n", "<leader>i", instructions, { silent = true })
   vim.keymap.set("n", "<leader>n", M.next_file, { silent = true })
+  vim.keymap.set("n", "<leader>b", M.undo_next, { silent = true })
   vim.keymap.set("n", "<leader>cc", M.commit_push, { silent = true })
   vim.keymap.set("n", "<leader>f", function()
     help.close()
