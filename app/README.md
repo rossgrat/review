@@ -48,6 +48,13 @@ Select a repository or PR with the arrow keys or `j` and `k`.
 Press Enter to open the selection.
 Use `/` to search a list.
 
+Press Space, then `i` to open the instructions popup from any screen.
+You can also use `:ReviewHelp`.
+The popup lists every Review shortcut and common Vim editing, search, diff, and pane controls.
+Use `j`, `k`, or the arrow keys to scroll.
+Press Esc, Enter, or `q` to close the popup.
+Press Space, then `i` again to close it.
+
 Repositories sort alphabetically by name and show their relative paths and current branches.
 Each PR shows its title, draft state, author, update date, source branch, and target branch.
 
@@ -64,6 +71,7 @@ The file list refreshes after each save.
 
 | Key | Action |
 | --- | --- |
+| Space, then `i` | Show or hide all instructions |
 | Space, then `f` | Focus the changed files |
 | Space, then `n` | Mark the current file viewed and open the next unviewed file |
 | Space, then `c`, then `c` | Commit and push saved changes in the selected PR worktree |

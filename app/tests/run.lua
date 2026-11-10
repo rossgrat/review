@@ -317,6 +317,65 @@ fi
     put(vim.env.PR_REVIEW_TEST_PR, vim.json.encode(pr))
   end)
 
+  test(
+    "instructions open from lists, include every Review shortcut, and close without changing selection",
+    function()
+      local ui = require("review.ui")
+      ui.start(catalog)
+      finish_task(ui)
+      local origin, buffer = api.nvim_get_current_win(), api.nvim_get_current_buf()
+      local cursor = api.nvim_win_get_cursor(origin)
+      api.nvim_feedkeys(" i", "xt", false)
+      local popup = api.nvim_get_current_win()
+      assert(popup ~= origin)
+      equal(api.nvim_win_get_config(popup).relative, "editor")
+      equal(vim.bo[api.nvim_get_current_buf()].modifiable, false)
+      equal(vim.wo[popup].diff, false)
+      local text = table.concat(api.nvim_buf_get_lines(0, 0, -1, false), "\n")
+      for _, shortcut in ipairs({
+        "Space i",
+        "Space f",
+        "Space n",
+        "Space p",
+        "Space r",
+        "Space c c",
+        "Space q",
+        ":ReviewHelp",
+        ":ReviewNext",
+        ":ReviewCommitPush",
+        ":ReviewQuit",
+        ":wall",
+        "]c / [c",
+        "Ctrl-w h/j/k/l",
+      }) do
+        assert(text:find(shortcut, 1, true), "Missing instructions: " .. shortcut)
+      end
+      api.nvim_feedkeys("10j", "xt", false)
+      assert(api.nvim_win_get_cursor(popup)[1] > 1)
+      api.nvim_feedkeys("q", "xt", false)
+      equal(api.nvim_win_is_valid(popup), false)
+      equal(api.nvim_get_current_win(), origin)
+      equal(api.nvim_get_current_buf(), buffer)
+      equal(api.nvim_win_get_cursor(origin), cursor)
+      vim.cmd("ReviewHelp")
+      api.nvim_feedkeys(vim.keycode("<Esc>"), "xt", false)
+      equal(api.nvim_get_current_win(), origin)
+      api.nvim_feedkeys(" i i", "xt", false)
+      equal(api.nvim_get_current_win(), origin)
+      equal(#api.nvim_list_wins(), 1)
+      local columns, rows = vim.o.columns, vim.o.lines
+      vim.o.columns, vim.o.lines = 50, 18
+      vim.cmd("ReviewHelp")
+      popup = api.nvim_get_current_win()
+      assert(api.nvim_win_get_width(popup) < vim.o.columns)
+      assert(api.nvim_win_get_height(popup) < vim.o.lines)
+      equal(vim.wo[popup].wrap, true)
+      api.nvim_feedkeys(vim.keycode("<CR>"), "xt", false)
+      vim.o.columns, vim.o.lines = columns, rows
+      equal(api.nvim_get_current_win(), origin)
+    end
+  )
+
   test("picker opens a real editable file beside a read-only merge base", function()
     local ui = require("review.ui")
     ui.start(catalog)
@@ -362,6 +421,40 @@ fi
     equal(#api.nvim_list_wins(), 1)
     equal(ui.state.session, nil)
     ui.refresh()
+  end)
+
+  test("instructions preserve unsaved code and close before focusing files", function()
+    local ui = require("review.ui")
+    ui.open(pr)
+    finish_task(ui)
+    choose_file(ui, "internal/catalog/item.go")
+    local origin, buffer = ui.state.right, api.nvim_get_current_buf()
+    local contents = api.nvim_buf_get_lines(buffer, 0, -1, false)
+    api.nvim_buf_set_lines(buffer, -1, -1, false, { "unsaved" })
+    local cursor = api.nvim_win_get_cursor(origin)
+    api.nvim_feedkeys(" i", "xt", false)
+    local popup = api.nvim_get_current_win()
+    equal(vim.bo[buffer].modified, true)
+    equal(vim.wo[popup].diff, false)
+    api.nvim_feedkeys(" f", "xt", false)
+    equal(api.nvim_get_current_win(), ui.state.list)
+    equal(api.nvim_win_is_valid(popup), false)
+    equal(vim.bo[buffer].modified, true)
+    equal(api.nvim_win_get_cursor(origin), cursor)
+    equal(#api.nvim_list_wins(), 3)
+    api.nvim_win_call(origin, function()
+      vim.cmd("diffupdate")
+      equal(vim.fn.diff_hlID(1, 1), 0)
+    end)
+    vim.cmd("ReviewHelp")
+    popup = api.nvim_get_current_win()
+    api.nvim_set_current_win(origin)
+    assert(vim.wait(1000, function() return not api.nvim_win_is_valid(popup) end, 10))
+    equal(api.nvim_get_current_win(), origin)
+    api.nvim_buf_set_lines(buffer, 0, -1, false, contents)
+    vim.bo[buffer].modified = false
+    ui.pull_requests(repository)
+    finish_task(ui)
   end)
 
   test("binary files and symbolic links stay read-only and removed changes clear the view", function()

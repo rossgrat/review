@@ -1,5 +1,6 @@
 local core = require("review.core")
 local tree = require("review.tree")
+local help = require("review.help")
 local M = {}
 local api = vim.api
 local state = { pr_cache = {}, reviews = {} }
@@ -34,6 +35,7 @@ end
 
 local function task(label, fn, dialog, on_success)
   if state.busy then return end
+  help.close()
   state.busy = true
   local loading
   if dialog then
@@ -115,7 +117,7 @@ local function page(title, context, summary, items, format, select, back, refres
   vim.wo.winfixwidth = false
   vim.wo.winhighlight = "Normal:ReviewPanel,EndOfBuffer:ReviewPanel"
   vim.wo.winbar = ""
-  vim.wo.statusline = " PR Review %= Enter open   / search   r refresh   q back   :q quit "
+  vim.wo.statusline = " PR Review %= Space-i help  Enter open  / search  r refresh  q back "
   state.picker_rows = rows
   highlight(buffer, 2, "ReviewAccent")
   highlight(buffer, 4, "ReviewTitle")
@@ -549,7 +551,7 @@ local function review(session)
     session.pr.base.ref
   )
   vim.o.statusline = status:gsub("%%", "%%%%"):gsub("%%%%<", "%%<")
-    .. " %= Space-n next  Space-cc commit/push  Space-q quit "
+    .. " %= Space-i help  Space-n next  Space-cc commit/push  Space-q quit "
   state.statusline = vim.o.statusline
   if session.behind > 0 or session.ahead > 0 then
     vim.o.statusline = vim.o.statusline
@@ -602,11 +604,20 @@ function M.start(directory)
   api.nvim_create_user_command("ReviewQuit", "qall<bang>", { bang = true, force = true })
   api.nvim_create_user_command("ReviewNext", M.next_file, { force = true })
   api.nvim_create_user_command("ReviewCommitPush", M.commit_push, { force = true })
+  local function instructions()
+    if not state.busy then help.toggle() end
+  end
+  api.nvim_create_user_command("ReviewHelp", instructions, { force = true })
   vim.cmd([[cnoreabbrev <expr> q getcmdtype() == ':' && getcmdline() ==# 'q' ? 'ReviewQuit' : 'q']])
-  vim.keymap.set("n", "<leader>q", "<cmd>ReviewQuit<CR>", { silent = true })
+  vim.keymap.set("n", "<leader>q", function()
+    help.close()
+    vim.cmd("ReviewQuit")
+  end, { silent = true })
+  vim.keymap.set("n", "<leader>i", instructions, { silent = true })
   vim.keymap.set("n", "<leader>n", M.next_file, { silent = true })
   vim.keymap.set("n", "<leader>cc", M.commit_push, { silent = true })
   vim.keymap.set("n", "<leader>f", function()
+    help.close()
     if state.list and api.nvim_win_is_valid(state.list) then api.nvim_set_current_win(state.list) end
   end)
   vim.keymap.set("n", "<leader>p", function()
