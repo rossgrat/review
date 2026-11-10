@@ -3,7 +3,7 @@ local tree = require("review.tree")
 local help = require("review.help")
 local M = {}
 local api = vim.api
-local state = { pr_cache = {}, reviews = {}, review_history = {} }
+local state = { pr_cache = {}, reviews = {}, review_history = {}, generated_expanded = {} }
 local decorations = api.nvim_create_namespace("PRReviewPresentation")
 local selection = api.nvim_create_namespace("PRReviewSelection")
 
@@ -233,6 +233,21 @@ function M.pull_requests(repo, force)
   end, not cached)
 end
 
+local function fold_generated(file)
+  if not file.generated then return end
+  for _, window in ipairs({ state.left, state.right }) do
+    api.nvim_win_call(window, function()
+      vim.wo.foldmethod = "manual"
+      vim.wo.foldenable = true
+      vim.wo.foldminlines = 0
+      vim.wo.foldtext = "'Generated file · Space g to expand/collapse both panes'"
+      vim.cmd("normal! zE")
+      vim.cmd("1,$fold")
+      vim.wo.foldlevel = state.generated_open[file.path] and 99 or 0
+    end)
+  end
+end
+
 local function show_file(file)
   local original = core.original(state.session, file)
   local absolute = state.session.path .. "/" .. file.path
@@ -260,8 +275,18 @@ local function show_file(file)
     vim.bo[left].filetype = filetype
     vim.bo[right].filetype = filetype
   end
-  api.nvim_win_call(state.left, function() vim.cmd("diffthis") end)
-  api.nvim_win_call(state.right, function() vim.cmd("diffthis") end)
+  for _, window in ipairs({ state.left, state.right }) do
+    api.nvim_win_call(window, function()
+      vim.wo.foldtext = "foldtext()"
+      vim.wo.foldminlines = 1
+      vim.cmd("diffthis")
+    end)
+  end
+  vim.wo[state.left].winhighlight =
+    "DiffAdd:ReviewDiffRemove,DiffChange:ReviewDiffRemove,DiffText:ReviewDiffOldText,DiffTextAdd:ReviewDiffOldText,DiffDelete:ReviewDiffFiller"
+  vim.wo[state.right].winhighlight =
+    "DiffAdd:ReviewDiffAdd,DiffChange:ReviewDiffAdd,DiffText:ReviewDiffNewText,DiffTextAdd:ReviewDiffNewText,DiffDelete:ReviewDiffFiller"
+  fold_generated(file)
   vim.wo[state.left].winbar = " Base: " .. state.session.pr.base.ref:gsub("%%", "%%%%") .. " (merge base)"
   vim.wo[state.right].winbar = " Local: " .. vim.fn.strtrans(file.path):gsub("%%", "%%%%") .. " %m"
   state.selected = file.path
@@ -334,6 +359,7 @@ local function render_files(focus)
       or status == "D" and "ReviewDeleted"
       or (status == "A" or status == "?") and "ReviewAdded"
       or "ReviewChanged"
+    if row.generated == row.count then status = "gen " .. status end
     api.nvim_buf_set_extmark(state.file_buffer, decorations, line - 1, 0, {
       virt_text = { { " " .. status .. " ", group } },
       virt_text_pos = "right_align",
@@ -370,6 +396,9 @@ local function update_viewed()
         state.collapsed[row.path], state.auto_collapsed[row.path] = true, true
       elseif state.auto_collapsed[row.path] then
         state.collapsed[row.path], state.auto_collapsed[row.path] = false, nil
+      end
+      if row.generated == row.count and not state.generated_dirs[row.path] then
+        state.collapsed[row.path], state.generated_dirs[row.path] = true, true
       end
     end
   end
@@ -457,6 +486,19 @@ function M.undo_next()
     end
     vim.schedule(function() vim.notify("The previous file is no longer in the diff.") end)
   end)
+end
+
+function M.toggle_generated()
+  if not state.session or state.busy then return end
+  for _, file in ipairs(state.files) do
+    if file.path == state.selected and file.generated then
+      task("Toggle generated diff", function()
+        state.generated_open[file.path] = not state.generated_open[file.path]
+        fold_generated(file)
+      end)
+      return
+    end
+  end
 end
 
 function M.commit_push()
@@ -570,6 +612,8 @@ local function review(session, position)
   local key = (state.repo.common or state.repo.path) .. "/" .. session.pr.number
   state.reviews[key] = state.reviews[key] or {}
   state.viewed, state.auto_collapsed = state.reviews[key], {}
+  state.generated_expanded[key] = state.generated_expanded[key] or {}
+  state.generated_open, state.generated_dirs = state.generated_expanded[key], {}
   if position then
     state.collapsed, state.auto_collapsed = position.collapsed, position.auto_collapsed
   end
@@ -742,6 +786,7 @@ function M.start(directory)
   api.nvim_create_user_command("ReviewQuit", "qall<bang>", { bang = true, force = true })
   api.nvim_create_user_command("ReviewNext", M.next_file, { force = true })
   api.nvim_create_user_command("ReviewBack", M.undo_next, { force = true })
+  api.nvim_create_user_command("ReviewGenerated", M.toggle_generated, { force = true })
   api.nvim_create_user_command("ReviewPull", function() M.refresh() end, { force = true })
   api.nvim_create_user_command("ReviewCommitPush", M.commit_push, { force = true })
   local function instructions()
@@ -756,6 +801,7 @@ function M.start(directory)
   vim.keymap.set("n", "<leader>i", instructions, { silent = true })
   vim.keymap.set("n", "<leader>n", M.next_file, { silent = true })
   vim.keymap.set("n", "<leader>b", M.undo_next, { silent = true })
+  vim.keymap.set("n", "<leader>g", M.toggle_generated, { silent = true })
   vim.keymap.set("n", "<leader>cc", M.commit_push, { silent = true })
   vim.keymap.set("n", "<leader>f", function()
     help.close()

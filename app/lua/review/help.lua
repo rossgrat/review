@@ -22,6 +22,7 @@ function M.toggle()
 REVIEW
   Space i               Show or hide these instructions
   Space f               Focus the changed files
+  Space g               Expand or collapse a generated file in both panes
   Space n               Mark this file viewed and open the next unviewed file
   Space b               Undo the last Next step and restore its viewed state
   Space p               Show the current repository's open PRs
@@ -61,6 +62,7 @@ COMMANDS
   :ReviewHelp           Show or hide these instructions
   :ReviewNext           Mark viewed and open the next unviewed file
   :ReviewBack           Undo the last Next step for this PR
+  :ReviewGenerated      Expand or collapse the current generated file
   :ReviewPull           Pull latest PR updates and reload clean files
   :pwd                  Show the active checkout directory
   :messages             Show recent updates, errors, and backup branch names
@@ -71,7 +73,9 @@ COMMANDS
 
 Save the current file before marking it viewed.
 Viewed marks last for this Review session.
-Completed folders collapse. Saving a viewed file makes it unviewed again.]],
+Completed folders collapse. Saving a viewed file makes it unviewed again.
+Generated files and vendor contents start collapsed. Space g opens both panes.
+Red shows old code. Green shows new code. Stronger colors mark changed words.]],
     "\n",
     { plain = true }
   )

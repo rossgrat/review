@@ -65,7 +65,9 @@ Use `h` and `l` to navigate directories.
 Press Enter on a file to edit it.
 The middle pane shows the read-only comparison version.
 The right pane opens the actual local file.
-The separate application theme preserves syntax colors and uses muted backgrounds for changed lines and words.
+The separate application theme preserves syntax colors.
+Changed lines have red backgrounds in the old version and green backgrounds in the local version.
+Stronger colors mark the exact changed words. Blank alignment rows stay neutral.
 Use normal Vim editing controls and `:w` to save changes.
 The file list refreshes after each save.
 
@@ -73,6 +75,7 @@ The file list refreshes after each save.
 | --- | --- |
 | Space, then `i` | Show or hide all instructions |
 | Space, then `f` | Focus the changed files |
+| Space, then `g` | Expand or collapse a generated file in both panes |
 | Space, then `n` | Mark the current file viewed and open the next unviewed file |
 | Space, then `b` | Undo the last Next step and return to that file |
 | Space, then `c`, then `c` | Commit and push saved changes in the selected PR worktree |
@@ -86,6 +89,14 @@ Save your edits before changing PRs.
 The application blocks navigation between PRs while a buffer contains unsaved edits.
 Quitting also stops if any buffer contains unsaved edits.
 Use `:q!` to exit and discard unsaved edits.
+
+Generated files start folded in both panes and show a `gen` badge in the sidebar.
+Directories that contain only generated changes start collapsed.
+This includes all files under a `vendor/` directory, standard lock and checksum files, and files with generated headers.
+Review also reads the `linguist-generated` attribute from `.gitattributes`.
+An explicit false value disables detection for that file, except under `vendor/`.
+Press Space, then `g`, or use `:ReviewGenerated` to expand or collapse both panes.
+Collapsing generated files does not mark them viewed. You can still open, edit, and save them.
 
 ## Review progress
 
