@@ -1,0 +1,36 @@
+#!/bin/sh
+set -eu
+source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+install_dir="${XDG_DATA_HOME:-$HOME/.local/share}/pr-review/app"
+bin_dir="${PR_REVIEW_BIN_DIR:-$HOME/.local/bin}"
+
+for tool in git nvim gh; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    printf 'Missing %s. Install the pinned tools with mise install in %s.\n' "$tool" "$source_dir" >&2
+    exit 1
+  fi
+done
+if [ -e "$install_dir" ] && [ ! -f "$install_dir/.installed-by-review" ]; then
+  printf 'Refusing to replace an unrelated directory: %s\n' "$install_dir" >&2
+  exit 1
+fi
+if [ -e "$bin_dir/review" ] || [ -L "$bin_dir/review" ]; then
+  if ! cmp -s "$bin_dir/review" "$source_dir/bin/review"; then
+    printf 'Refusing to replace an unrelated command: %s\n' "$bin_dir/review" >&2
+    exit 1
+  fi
+fi
+if ! gh auth status --hostname github.com >/dev/null 2>&1; then
+  gh auth login --hostname github.com
+fi
+mkdir -p "$install_dir/lua" "$bin_dir"
+cp "$source_dir/init.lua" "$source_dir/review" "$install_dir/"
+cp -R "$source_dir/lua/review" "$install_dir/lua/"
+printf 'pr-review\n' > "$install_dir/.installed-by-review"
+cp "$source_dir/bin/review" "$bin_dir/review"
+chmod +x "$install_dir/review" "$bin_dir/review"
+printf 'Installed Review. Run: review /path/to/repos\n'
+case ":$PATH:" in
+  *":$bin_dir:"*) ;;
+  *) printf 'Add %s to PATH in your shell configuration.\n' "$bin_dir" ;;
+esac

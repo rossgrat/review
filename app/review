@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+app_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+export NVIM_APPNAME=pr-review
+export NVIM_LOG_FILE=/dev/null
+export PR_REVIEW_DIRECTORY="${1:-$PWD}"
+exec nvim --noplugin -i NONE -u "$app_dir/init.lua"

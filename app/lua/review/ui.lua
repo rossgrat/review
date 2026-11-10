@@ -1,0 +1,473 @@
+local core = require("review.core")
+local tree = require("review.tree")
+local M = {}
+local api = vim.api
+local state = { pr_cache = {} }
+local decorations = api.nvim_create_namespace("PRReviewPresentation")
+local selection = api.nvim_create_namespace("PRReviewSelection")
+
+local function highlight(buffer, line, group, start_col, end_col)
+  api.nvim_buf_set_extmark(buffer, decorations, line - 1, start_col or 0, {
+    end_col = end_col or #api.nvim_buf_get_lines(buffer, line - 1, line, false)[1],
+    hl_group = group,
+  })
+end
+
+local function map(buffer, key, callback)
+  vim.keymap.set("n", key, callback, { buffer = buffer, silent = true })
+end
+
+local function write(buffer, lines)
+  vim.bo[buffer].modifiable = true
+  api.nvim_buf_set_lines(buffer, 0, -1, false, lines)
+  vim.bo[buffer].modifiable = false
+  vim.bo[buffer].modified = false
+end
+
+local function scratch(name, text)
+  local buffer = api.nvim_create_buf(false, true)
+  api.nvim_buf_set_name(buffer, "pr-review://" .. name .. "/" .. buffer)
+  vim.bo[buffer].bufhidden = "wipe"
+  write(buffer, vim.split(text or "", "\n", { plain = true }))
+  return buffer
+end
+
+local function task(label, fn, dialog)
+  if state.busy then return end
+  state.busy = true
+  local loading
+  if dialog then
+    local width = math.min(56, vim.o.columns - 4)
+    loading = api.nvim_open_win(scratch("loading", "\n  " .. label .. "\n"), false, {
+      relative = "editor",
+      row = math.max(0, math.floor((vim.o.lines - 5) / 2)),
+      col = math.max(0, math.floor((vim.o.columns - width) / 2)),
+      width = width,
+      height = 3,
+      style = "minimal",
+      border = "rounded",
+      focusable = false,
+    })
+    vim.wo[loading].winhighlight = "Normal:ReviewPanel,FloatBorder:ReviewBorder"
+    state.loading = loading
+    vim.cmd("redraw")
+  end
+  vim.schedule(function()
+    coroutine.wrap(function()
+      local ok, err = pcall(fn)
+      if loading and api.nvim_win_is_valid(loading) then api.nvim_win_close(loading, true) end
+      state.loading = nil
+      state.busy = false
+      if not ok then
+        vim.notify(tostring(err), vim.log.levels.ERROR)
+      else
+        vim.cmd("echo ''")
+      end
+    end)()
+  end)
+end
+
+local function saved()
+  for _, buffer in ipairs(api.nvim_list_bufs()) do
+    if vim.bo[buffer].modified then
+      vim.notify("Save your edits before changing PRs.", vim.log.levels.WARN)
+      return false
+    end
+  end
+  return true
+end
+
+local function page(title, context, summary, items, format, select, back, refresh)
+  state.session, state.list, state.selected = nil, nil, nil
+  api.nvim_create_augroup("PRReviewRefresh", { clear = true })
+  vim.cmd("silent only")
+  vim.cmd("diffoff!")
+  local margin = "   "
+  local lines = {
+    "",
+    margin .. "PR REVIEW",
+    "",
+    margin .. title,
+    margin .. context,
+    margin .. summary,
+    "",
+    margin .. string.rep("─", math.min(100, vim.o.columns - 8)),
+    "",
+  }
+  local rows, records = {}, {}
+  for _, item in ipairs(items) do
+    local record = { item = item, first = #lines + 1 }
+    for _, text in ipairs(format(item)) do
+      lines[#lines + 1] = margin .. vim.fn.strtrans(text)
+      rows[#lines] = record
+    end
+    record.last = #lines
+    records[#records + 1] = record
+    lines[#lines + 1] = ""
+  end
+  if #items == 0 then lines[#lines + 1] = margin .. "No results." end
+  local buffer = scratch("picker", table.concat(lines, "\n"))
+  api.nvim_win_set_buf(0, buffer)
+  vim.wo.number = false
+  vim.wo.cursorline = false
+  vim.wo.wrap = false
+  vim.wo.winfixwidth = false
+  vim.wo.winhighlight = "Normal:ReviewPanel,EndOfBuffer:ReviewPanel"
+  vim.wo.winbar = ""
+  vim.wo.statusline = " PR Review %= Enter open   / search   r refresh   q back   :q quit "
+  state.picker_rows = rows
+  highlight(buffer, 2, "ReviewAccent")
+  highlight(buffer, 4, "ReviewTitle")
+  for _, line in ipairs({ 5, 6 }) do
+    highlight(buffer, line, "ReviewMuted")
+  end
+  highlight(buffer, 8, "ReviewBorder")
+  for _, record in ipairs(records) do
+    for line = record.first, record.last do
+      highlight(buffer, line, line == record.first and "ReviewTitle" or "ReviewMuted")
+      local start_col, end_col = lines[line]:find("DRAFT", 1, true)
+      if start_col then highlight(buffer, line, "ReviewChanged", start_col - 1, end_col) end
+      start_col, end_col = lines[line]:find("OPEN", 1, true)
+      if start_col then highlight(buffer, line, "ReviewAdded", start_col - 1, end_col) end
+      local target = lines[line]:find("→ ", 1, true)
+      if target then highlight(buffer, line, "ReviewAdded", target + #"→ " - 1, #lines[line]) end
+    end
+  end
+  local function select_record()
+    api.nvim_buf_clear_namespace(buffer, selection, 0, -1)
+    local record = rows[api.nvim_win_get_cursor(0)[1]]
+    if record then
+      for line = record.first, record.last do
+        api.nvim_buf_set_extmark(buffer, selection, line - 1, 0, { line_hl_group = "ReviewSelection" })
+      end
+    end
+  end
+  local function move(direction)
+    local current = api.nvim_win_get_cursor(0)[1]
+    local record = rows[current]
+    local threshold = record and (direction > 0 and record.last or record.first) or current
+    for step = 1, #records do
+      local candidate = records[direction > 0 and step or #records - step + 1]
+      if direction > 0 and candidate.first > threshold or direction < 0 and candidate.first < threshold then
+        api.nvim_win_set_cursor(0, { candidate.first, #margin })
+        return
+      end
+    end
+  end
+  api.nvim_create_autocmd("CursorMoved", { buffer = buffer, callback = select_record })
+  api.nvim_win_set_cursor(0, { records[1] and records[1].first or #lines, #margin })
+  select_record()
+  for _, key in ipairs({ "j", "<Down>" }) do
+    map(buffer, key, function() move(1) end)
+  end
+  for _, key in ipairs({ "k", "<Up>" }) do
+    map(buffer, key, function() move(-1) end)
+  end
+  map(buffer, "<CR>", function()
+    local record = rows[api.nvim_win_get_cursor(0)[1]]
+    if record then select(record.item) end
+  end)
+  map(buffer, "q", back)
+  map(buffer, "r", refresh)
+end
+
+function M.repositories()
+  if not saved() then return end
+  task("Finding repositories...", function()
+    local repos = core.discover(state.directory)
+    page(
+      "Repositories",
+      vim.fn.fnamemodify(state.directory, ":~"),
+      string.format("%d %s", #repos, #repos == 1 and "repository" or "repositories"),
+      repos,
+      function(repo)
+        local path = vim.fs.relpath(vim.uv.fs_realpath(state.directory), repo.path) or repo.path
+        return { repo.name, path .. "   ·   " .. repo.branch }
+      end,
+      M.pull_requests,
+      function() vim.cmd("confirm qall") end,
+      M.repositories
+    )
+  end, true)
+end
+
+function M.pull_requests(repo, force)
+  if not saved() then return end
+  local key = repo.common or repo.path
+  local cached = state.pr_cache[key]
+  if force or cached and vim.uv.hrtime() - cached.loaded > 30e9 then cached = nil end
+  task("Reading open PRs from GitHub...", function()
+    state.repo = repo
+    if not cached then
+      cached = { prs = core.pull_requests(repo), slug = repo.slug, loaded = vim.uv.hrtime() }
+      state.pr_cache[key] = cached
+    end
+    repo.slug = cached.slug
+    local prs = cached.prs
+    local drafts = 0
+    for _, pr in ipairs(prs) do
+      if pr.draft then drafts = drafts + 1 end
+    end
+    page(
+      "Open pull requests",
+      repo.slug,
+      string.format("%d open   ·   %d %s", #prs, drafts, drafts == 1 and "draft" or "drafts"),
+      prs,
+      function(pr)
+        return {
+          string.format("#%d  %s", pr.number, pr.title),
+          (pr.draft and "DRAFT" or "OPEN")
+            .. "   ·   @"
+            .. (pr.user and pr.user.login or "unknown")
+            .. (pr.updated_at and "   ·   updated " .. pr.updated_at:sub(1, 10) or ""),
+          pr.head.ref .. " → " .. pr.base.ref,
+        }
+      end,
+      M.open,
+      M.repositories,
+      function() M.pull_requests(repo, true) end
+    )
+  end, not cached)
+end
+
+local function show_file(file)
+  local original = core.original(state.session, file)
+  local absolute = state.session.path .. "/" .. file.path
+  local stat = vim.uv.fs_lstat(absolute)
+  local symlink = stat and stat.type == "link"
+  local disk = not symlink and io.open(absolute, "rb")
+  local sample = disk and disk:read(8192) or ""
+  if disk then disk:close() end
+  local binary = original:find("\0", 1, true) or sample:find("\0", 1, true)
+  local left = scratch("base", binary and "Binary file" or original:gsub("\n$", ""))
+  local right
+  if symlink then
+    right = scratch("local", vim.uv.fs_readlink(absolute))
+  elseif binary or file.status == "D" or vim.fn.isdirectory(absolute) == 1 then
+    right = scratch("local", binary and "Binary file" or file.status == "D" and "" or "Submodule")
+  else
+    right = vim.fn.bufadd(absolute)
+    vim.fn.bufload(right)
+  end
+  vim.cmd("diffoff!")
+  api.nvim_win_set_buf(state.left, left)
+  api.nvim_win_set_buf(state.right, right)
+  local filetype = vim.filetype.match({ filename = absolute })
+  if filetype then
+    vim.bo[left].filetype = filetype
+    vim.bo[right].filetype = filetype
+  end
+  api.nvim_win_call(state.left, function() vim.cmd("diffthis") end)
+  api.nvim_win_call(state.right, function() vim.cmd("diffthis") end)
+  vim.wo[state.left].winbar = " Base: " .. state.session.pr.base.ref:gsub("%%", "%%%%") .. " (merge base)"
+  vim.wo[state.right].winbar = " Local: " .. vim.fn.strtrans(file.path):gsub("%%", "%%%%") .. " %m"
+  state.selected = file.path
+  for line, row in pairs(state.tree_rows) do
+    if row.file and row.file.path == file.path then
+      api.nvim_win_set_cursor(state.list, { line, 0 })
+      break
+    end
+  end
+  map(right, "<leader>f", function() api.nvim_set_current_win(state.list) end)
+  api.nvim_set_current_win(state.right)
+end
+
+local function render_files(focus)
+  local current = state.tree_rows and state.tree_rows[api.nvim_win_get_cursor(state.list)[1]]
+  focus = focus or current and current.path or state.selected
+  local added, modified, deleted = 0, 0, 0
+  for _, file in ipairs(state.files) do
+    if file.status == "A" or file.status == "?" then
+      added = added + 1
+    elseif file.status == "D" then
+      deleted = deleted + 1
+    else
+      modified = modified + 1
+    end
+  end
+  local lines = {
+    "",
+    " CHANGED FILES",
+    " #" .. state.session.pr.number .. " · " .. vim.fs.basename(state.repo.path),
+    string.format(
+      " %d %s   +%d  ~%d  -%d",
+      #state.files,
+      #state.files == 1 and "file" or "files",
+      added,
+      modified,
+      deleted
+    ),
+    "",
+  }
+  state.tree_rows = {}
+  local cursor = 6
+  for _, row in ipairs(tree.rows(state.files, state.collapsed)) do
+    lines[#lines + 1] = row.text
+    state.tree_rows[#lines] = row
+    if row.path == focus then cursor = #lines end
+  end
+  if #state.files == 0 then lines[#lines + 1] = "No changes." end
+  write(state.file_buffer, lines)
+  api.nvim_buf_clear_namespace(state.file_buffer, decorations, 0, -1)
+  highlight(state.file_buffer, 2, "ReviewTitle")
+  highlight(state.file_buffer, 3, "ReviewMuted")
+  highlight(state.file_buffer, 4, "ReviewMuted")
+  for line, row in pairs(state.tree_rows) do
+    highlight(state.file_buffer, line, row.directory and "ReviewAccent" or "ReviewFile")
+    highlight(state.file_buffer, line, "ReviewBorder", 0, row.guides)
+    local status = row.directory and tostring(row.count) or row.file.status:sub(1, 1)
+    local group = row.directory and "ReviewMuted"
+      or status == "D" and "ReviewDeleted"
+      or (status == "A" or status == "?") and "ReviewAdded"
+      or "ReviewChanged"
+    api.nvim_buf_set_extmark(state.file_buffer, decorations, line - 1, 0, {
+      virt_text = { { " " .. status .. " ", group } },
+      virt_text_pos = "right_align",
+    })
+  end
+  api.nvim_win_set_cursor(state.list, { cursor, 0 })
+end
+
+local function files()
+  state.files = core.changes(state.session)
+  render_files()
+end
+
+local function tree_action(action)
+  local row = state.tree_rows[api.nvim_win_get_cursor(state.list)[1]]
+  if not row then return end
+  if action == "parent" then
+    if row.directory and not state.collapsed[row.path] then
+      state.collapsed[row.path] = true
+      render_files(row.path)
+    elseif row.parent then
+      render_files(row.parent)
+    end
+  elseif row.directory then
+    if action == "expand" and not state.collapsed[row.path] then
+      api.nvim_win_set_cursor(state.list, { api.nvim_win_get_cursor(state.list)[1] + 1, 0 })
+    else
+      if action == "expand" then
+        state.collapsed[row.path] = false
+      else
+        state.collapsed[row.path] = not state.collapsed[row.path]
+      end
+      render_files(row.path)
+    end
+  else
+    task("Opening " .. row.file.path, function() show_file(row.file) end)
+  end
+end
+
+function M.refresh()
+  if not state.session then return end
+  task("Refreshing local changes...", function()
+    files()
+    local selected
+    for _, file in ipairs(state.files) do
+      if file.path == state.selected then selected = file end
+    end
+    if selected then
+      local current = api.nvim_get_current_win()
+      show_file(selected)
+      api.nvim_set_current_win(current)
+    else
+      vim.cmd("diffoff!")
+      api.nvim_win_set_buf(state.left, scratch("base"))
+      api.nvim_win_set_buf(state.right, scratch("local"))
+      state.selected = nil
+    end
+  end)
+end
+
+local function review(session)
+  state.session = session
+  state.selected, state.tree_rows, state.collapsed = nil, nil, {}
+  vim.cmd("silent only")
+  state.list = api.nvim_get_current_win()
+  state.file_buffer = scratch("files")
+  api.nvim_win_set_buf(state.list, state.file_buffer)
+  vim.cmd("vsplit")
+  state.left = api.nvim_get_current_win()
+  vim.cmd("vsplit")
+  state.right = api.nvim_get_current_win()
+  api.nvim_win_set_buf(state.left, scratch("base"))
+  api.nvim_win_set_buf(state.right, scratch("local"))
+  api.nvim_win_set_width(state.list, math.max(28, math.min(38, math.floor(vim.o.columns * 0.27))))
+  vim.wo[state.list].winfixwidth = true
+  vim.wo[state.list].winbar = " FILES   h/l folders"
+  vim.wo[state.list].cursorline = true
+  vim.wo[state.list].winhighlight = "Normal:ReviewPanel,EndOfBuffer:ReviewPanel,CursorLine:ReviewSelection"
+  for _, win in ipairs({ state.left, state.right }) do
+    vim.wo[win].number = true
+    vim.wo[win].wrap = false
+    vim.wo[win].cursorline = false
+    vim.wo[win].winhighlight = ""
+  end
+  local status = string.format(
+    " %s #%d  %%<%s → %s",
+    state.repo.slug,
+    session.pr.number,
+    session.pr.head.ref,
+    session.pr.base.ref
+  )
+  vim.o.statusline = status:gsub("%%", "%%%%"):gsub("%%%%<", "%%<")
+    .. " %= Space-f files  Space-p PRs  Space-r refresh  Space-q quit "
+  if session.behind > 0 or session.ahead > 0 then
+    vim.o.statusline = vim.o.statusline
+      .. string.format("  [local: %d ahead, %d behind GitHub]", session.ahead, session.behind)
+  end
+  for _, win in ipairs({ state.list, state.left, state.right }) do
+    vim.wo[win].statusline = vim.o.statusline
+  end
+  map(state.file_buffer, "<CR>", function() tree_action("open") end)
+  map(state.file_buffer, "<Tab>", function() tree_action("open") end)
+  for _, key in ipairs({ "h", "<Left>" }) do
+    map(state.file_buffer, key, function() tree_action("parent") end)
+  end
+  for _, key in ipairs({ "l", "<Right>" }) do
+    map(state.file_buffer, key, function() tree_action("expand") end)
+  end
+  map(state.file_buffer, "q", function() M.pull_requests(state.repo) end)
+  map(state.file_buffer, "r", M.refresh)
+  files()
+  if state.files[1] then show_file(state.files[1]) end
+  local group = api.nvim_create_augroup("PRReviewRefresh", { clear = true })
+  api.nvim_create_autocmd("BufWritePost", {
+    group = group,
+    callback = function()
+      if state.session == session and api.nvim_win_is_valid(state.list) then M.refresh() end
+    end,
+  })
+end
+
+function M.open(pr)
+  if not saved() then return end
+  task("Preparing PR #" .. pr.number .. "...", function()
+    local fresh = core.pull_request(state.repo, pr.number)
+    local session = core.prepare(state.repo, fresh)
+    vim.cmd.cd(vim.fn.fnameescape(session.path))
+    review(session)
+  end, true)
+end
+
+function M.start(directory)
+  state.directory = vim.fs.normalize(vim.fn.fnamemodify(directory, ":p"))
+  vim.g.mapleader = " "
+  api.nvim_create_user_command("ReviewQuit", "qall<bang>", { bang = true, force = true })
+  vim.cmd([[cnoreabbrev <expr> q getcmdtype() == ':' && getcmdline() ==# 'q' ? 'ReviewQuit' : 'q']])
+  vim.keymap.set("n", "<leader>q", "<cmd>ReviewQuit<CR>", { silent = true })
+  vim.keymap.set("n", "<leader>f", function()
+    if state.list and api.nvim_win_is_valid(state.list) then api.nvim_set_current_win(state.list) end
+  end)
+  vim.keymap.set("n", "<leader>p", function()
+    if state.repo then M.pull_requests(state.repo) end
+  end)
+  vim.keymap.set("n", "<leader>r", function()
+    if state.session then M.refresh() end
+  end)
+  M.repositories()
+end
+
+M.state = state
+return M

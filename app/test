@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+cd -- "$(dirname -- "$0")"
+export NVIM_APPNAME=pr-review-test
+export NVIM_LOG_FILE=/dev/null
+exec nvim --headless --noplugin -i NONE -u ./init.lua -l tests/run.lua
