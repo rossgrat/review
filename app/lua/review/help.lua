@@ -25,7 +25,7 @@ REVIEW
   Space n               Mark this file viewed and open the next unviewed file
   Space b               Undo the last Next step and restore its viewed state
   Space p               Show the current repository's open PRs
-  Space r               Refresh local changes in the open PR
+  Space r               Pull latest PR updates and reload clean files
   Space c c             Commit all saved worktree changes and push (asks first)
   Space q               Quit Review and protect unsaved edits
 
@@ -35,7 +35,7 @@ FILES AND LISTS
   Tab (file tree)       Open a file or toggle a folder
   h / Left (file tree)  Collapse a folder or select its parent
   l / Right (file tree) Expand a folder, enter it, or open a file
-  r                     Reload the current list or local file changes
+  r                     Reload the list; pull updates in the file tree
   q                     Go back; quit from the repository list
 
 EDIT AND SEARCH
@@ -61,6 +61,9 @@ COMMANDS
   :ReviewHelp           Show or hide these instructions
   :ReviewNext           Mark viewed and open the next unviewed file
   :ReviewBack           Undo the last Next step for this PR
+  :ReviewPull           Pull latest PR updates and reload clean files
+  :pwd                  Show the active checkout directory
+  :messages             Show recent updates, errors, and backup branch names
   :ReviewCommitPush     Commit and push saved worktree changes (asks first)
   :ReviewQuit           Quit the whole application
   :q / :qall            Quit Review and protect unsaved edits

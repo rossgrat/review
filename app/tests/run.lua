@@ -340,6 +340,87 @@ local ok, err = xpcall(function()
     equal(opened.base, parent)
   end)
 
+  test("opening a PR updates its clean existing checkout to the latest commit", function()
+    local fresh = vim.deepcopy(pr)
+    fresh.number, fresh.head.ref = 3, "fresh"
+    local checkout = core.prepare(repository, fresh, root .. "/managed").path
+    local publisher = root .. "/publisher"
+    core.git(publisher, { "switch", "-c", "refresh-updates", child })
+    put(publisher .. "/app.txt", "new GitHub content\n")
+    core.git(publisher, { "add", "app.txt" })
+    core.git(publisher, { "commit", "-m", "Update PR remotely" })
+    fresh.head.sha = vim.trim(core.git(publisher, { "rev-parse", "HEAD" }))
+    core.git(publisher, { "push", "origin", "HEAD:refs/pull/3/head", "HEAD:refs/heads/fresh" })
+    local updated = core.prepare(repository, fresh)
+    equal(updated.path, checkout)
+    equal(vim.trim(core.git(checkout, { "rev-parse", "HEAD" })), fresh.head.sha)
+    equal(get(checkout .. "/app.txt"), "new GitHub content\n")
+    equal(updated.behind, 0)
+  end)
+
+  test("an existing checkout is reused instead of creating a worktree", function()
+    local checkout = root .. "/existing"
+    core.run({ "git", "init", "--initial-branch=main", checkout })
+    core.git(checkout, { "config", "user.name", "Review Test" })
+    core.git(checkout, { "config", "user.email", "review-test@example.invalid" })
+    core.git(checkout, { "config", "commit.gpgsign", "false" })
+    put(checkout .. "/file.txt", "base\n")
+    core.git(checkout, { "add", "file.txt" })
+    core.git(checkout, { "commit", "-m", "Base" })
+    local base = vim.trim(core.git(checkout, { "rev-parse", "HEAD" }))
+    core.git(checkout, { "switch", "-c", "feature" })
+    put(checkout .. "/file.txt", "PR\n")
+    core.git(checkout, { "add", "file.txt" })
+    core.git(checkout, { "commit", "-m", "PR" })
+    local head = vim.trim(core.git(checkout, { "rev-parse", "HEAD" }))
+    core.git(checkout, { "switch", "main" })
+    local project = { full_name = "example/existing", ssh_url = checkout }
+    local selected = {
+      number = 10,
+      base = { ref = "main", sha = base, repo = project },
+      head = { ref = "feature", sha = head, repo = project },
+    }
+    local opened = core.prepare({ path = checkout }, selected)
+    equal(opened.path, checkout)
+    equal(opened.branch, "feature")
+    equal(#core.worktrees(checkout), 1)
+    equal(get(checkout .. "/file.txt"), "PR\n")
+    core.git(checkout, { "branch", "other-source" })
+    put(checkout .. "/notes.txt", "keep my changes\n")
+    local unrelated = root .. "/unrelated-checkout"
+    core.git(checkout, { "worktree", "add", "-b", "unrelated-branch", unrelated, "main" })
+    selected.head.ref = "other-source"
+    local pending = core.prepare({ path = checkout }, selected)
+    equal(pending.needs_worktree, true)
+    equal(vim.uv.fs_stat(pending.path), nil)
+    equal(#core.worktrees(checkout), 2)
+    equal(vim.trim(core.git(unrelated, { "branch", "--show-current" })), "unrelated-branch")
+    equal(vim.trim(core.git(checkout, { "branch", "--show-current" })), "feature")
+    equal(get(checkout .. "/notes.txt"), "keep my changes\n")
+    core.git(checkout, { "switch", "main" })
+    local alias = root .. "/user-checkout"
+    core.git(checkout, { "worktree", "add", "-b", "working-alias", alias, "feature" })
+    core.git(checkout, { "remote", "add", "github", "git@github.com:example/existing.git" })
+    core.git(checkout, { "config", "branch.working-alias.remote", "github" })
+    core.git(checkout, { "config", "branch.working-alias.merge", "refs/heads/feature" })
+    local managed = vim.fn.stdpath("data") .. "/worktrees/owned"
+    vim.fn.mkdir(vim.fs.dirname(managed), "p")
+    core.git(checkout, { "worktree", "add", managed, "feature" })
+    selected.head.ref = "feature"
+    opened = core.prepare({ path = checkout }, selected)
+    equal(opened.path, alias)
+    equal(opened.branch, "working-alias")
+    equal(#core.worktrees(checkout), 4)
+    local stale = root .. "/stale-checkout"
+    core.git(checkout, { "worktree", "add", "-b", "stale-branch", stale, "feature" })
+    vim.uv.fs_unlink(stale .. "/.git")
+    local found_stale = false
+    for _, candidate in ipairs(core.worktrees(checkout)) do
+      if candidate.path == stale then found_stale = candidate.prunable == true end
+    end
+    assert(found_stale, "Git must identify stale registrations even when their directories remain")
+  end)
+
   local bin = root .. "/bin"
   vim.fn.mkdir(bin, "p")
   put(
@@ -427,6 +508,7 @@ fi
         ":ReviewHelp",
         ":ReviewNext",
         ":ReviewBack",
+        ":ReviewPull",
         ":ReviewCommitPush",
         ":ReviewQuit",
         ":wall",
@@ -460,6 +542,155 @@ fi
       equal(api.nvim_get_current_win(), origin)
     end
   )
+
+  test("pull and picker reopen update loaded buffers while saves stay local", function()
+    local ui = require("review.ui")
+    local fresh = vim.deepcopy(pr)
+    fresh.number, fresh.head.ref = 3, "fresh"
+    local publisher = root .. "/publisher"
+    fresh.head.sha = vim.trim(core.git(publisher, { "rev-parse", "HEAD" }))
+    put(vim.env.PR_REVIEW_TEST_PR, vim.json.encode(fresh))
+    ui.pull_requests(repository, true)
+    finish_task(ui)
+    ui.open(fresh)
+    finish_task(ui)
+    choose_file(ui, "app.txt")
+    local checkout = ui.state.session.path
+    local function publish(text)
+      put(publisher .. "/app.txt", text)
+      core.git(publisher, { "add", "app.txt" })
+      core.git(publisher, { "commit", "-m", "Update remote PR" })
+      fresh.head.sha = vim.trim(core.git(publisher, { "rev-parse", "HEAD" }))
+      core.git(publisher, { "push", "origin", "HEAD:refs/pull/3/head", "HEAD:refs/heads/fresh" })
+      put(vim.env.PR_REVIEW_TEST_PR, vim.json.encode(fresh))
+    end
+    publish("pulled version\n")
+    local previous_head = vim.trim(core.git(checkout, { "rev-parse", "HEAD" }))
+    local provider = core.pull_request
+    core.pull_request = function(...)
+      local result = provider(...)
+      api.nvim_buf_set_lines(api.nvim_win_get_buf(ui.state.right), 0, -1, false, { "typed while pulling" })
+      return result
+    end
+    ui.refresh()
+    finish_task(ui)
+    core.pull_request = provider
+    equal(vim.trim(core.git(checkout, { "rev-parse", "HEAD" })), previous_head)
+    local edited = api.nvim_win_get_buf(ui.state.right)
+    equal(vim.bo[edited].modified, true)
+    equal(api.nvim_buf_get_lines(edited, 0, -1, false), { "typed while pulling" })
+    api.nvim_buf_set_lines(edited, 0, -1, false, { "new GitHub content" })
+    vim.bo[edited].modified = false
+    api.nvim_feedkeys(" r", "xt", false)
+    finish_task(ui)
+    equal(vim.trim(core.git(checkout, { "rev-parse", "HEAD" })), fresh.head.sha)
+    equal(ui.state.selected, "app.txt")
+    equal(api.nvim_buf_get_lines(api.nvim_win_get_buf(ui.state.right), 0, -1, false), { "pulled version" })
+    equal(ui.state.session.behind, 0)
+    publish("picker version\n")
+    ui.pull_requests(repository, true)
+    finish_task(ui)
+    ui.open(fresh)
+    finish_task(ui)
+    choose_file(ui, "app.txt")
+    equal(api.nvim_buf_get_lines(api.nvim_win_get_buf(ui.state.right), 0, -1, false), { "picker version" })
+    fresh.base.ref, fresh.base.sha = "main", sha("main")
+    put(vim.env.PR_REVIEW_TEST_PR, vim.json.encode(fresh))
+    vim.cmd("ReviewPull")
+    finish_task(ui)
+    equal(ui.state.session.base, sha("main"))
+    equal(api.nvim_buf_get_lines(api.nvim_win_get_buf(ui.state.left), 0, -1, false), { "base" })
+    local original, calls = core.pull_request, 0
+    core.pull_request = function(...)
+      calls = calls + 1
+      return original(...)
+    end
+    api.nvim_set_current_win(ui.state.right)
+    api.nvim_buf_set_lines(0, 0, -1, false, { "saved local edit" })
+    vim.cmd("write")
+    finish_task(ui)
+    equal(calls, 0)
+    core.pull_request = original
+    local local_head = vim.trim(core.git(checkout, { "rev-parse", "HEAD" }))
+    publish("remote after local edit\n")
+    ui.refresh()
+    finish_task(ui)
+    equal(vim.trim(core.git(checkout, { "rev-parse", "HEAD" })), local_head)
+    equal(get(checkout .. "/app.txt"), "saved local edit\n")
+    assert(ui.state.session.warning:find("Local changes", 1, true))
+    core.git(checkout, { "restore", "--source=HEAD", "--", "app.txt" })
+    ui.refresh()
+    finish_task(ui)
+    equal(vim.trim(core.git(checkout, { "rev-parse", "HEAD" })), fresh.head.sha)
+    equal(
+      api.nvim_buf_get_lines(api.nvim_win_get_buf(ui.state.right), 0, -1, false),
+      { "remote after local edit" }
+    )
+    put(checkout .. "/local-only-refresh.txt", "local commit\n")
+    core.git(checkout, { "add", "local-only-refresh.txt" })
+    core.git(checkout, { "commit", "-m", "Unpushed local commit" })
+    local_head = vim.trim(core.git(checkout, { "rev-parse", "HEAD" }))
+    publish("remote diverged\n")
+    ui.refresh()
+    finish_task(ui)
+    equal(vim.trim(core.git(checkout, { "rev-parse", "HEAD" })), fresh.head.sha)
+    local backup = assert(ui.state.session.backup, "Diverged local history needs a backup")
+    equal(vim.trim(core.git(checkout, { "rev-parse", backup })), local_head)
+    equal(core.git(checkout, { "show", backup .. ":local-only-refresh.txt" }), "local commit\n")
+    equal(vim.uv.fs_stat(checkout .. "/local-only-refresh.txt"), nil)
+    equal(ui.state.session.ahead, 0)
+    equal(ui.state.session.behind, 0)
+    put(checkout .. "/collision.ignored", "keep ignored data\n")
+    put(checkout .. "/another-local.txt", "another local commit\n")
+    core.git(checkout, { "add", "another-local.txt" })
+    core.git(checkout, { "commit", "-m", "Preserve another local commit" })
+    local_head = vim.trim(core.git(checkout, { "rev-parse", "HEAD" }))
+    put(publisher .. "/collision.ignored", "remote tracked file\n")
+    core.git(publisher, { "add", "--force", "collision.ignored" })
+    core.git(publisher, { "commit", "-m", "Track previously ignored file" })
+    fresh.head.sha = vim.trim(core.git(publisher, { "rev-parse", "HEAD" }))
+    core.git(publisher, { "push", "origin", "HEAD:refs/pull/3/head", "HEAD:refs/heads/fresh" })
+    local success = pcall(core.prepare, repository, fresh)
+    equal(success, false)
+    equal(vim.trim(core.git(checkout, { "rev-parse", "HEAD" })), local_head)
+    equal(get(checkout .. "/collision.ignored"), "keep ignored data\n")
+    put(vim.env.PR_REVIEW_TEST_PR, vim.json.encode(pr))
+    ui.pull_requests(repository)
+    finish_task(ui)
+  end)
+
+  test("worktree creation is offered only as an explicit fallback", function()
+    local ui = require("review.ui")
+    local bare = root .. "/fallback.git"
+    core.run({ "git", "clone", "--bare", "--shared", repo, bare })
+    local clone = { path = bare, common = bare }
+    local pending = core.prepare(clone, pr)
+    equal(pending.needs_worktree, true)
+    local previous, allow, prompts = vim.ui.select, false, 0
+    vim.ui.select = function(choices, opts, done)
+      prompts = prompts + 1
+      equal(choices[1], "Cancel")
+      assert(opts.prompt:find(pending.path, 1, true))
+      done(allow and "Create worktree" or "Cancel")
+    end
+    ui.pull_requests(clone, true)
+    finish_task(ui)
+    ui.open(pr)
+    finish_task(ui)
+    equal(prompts, 1)
+    equal(vim.uv.fs_stat(pending.path), nil)
+    equal(#core.worktrees(bare), 1)
+    equal(ui.state.session, nil)
+    allow = true
+    ui.open(pr)
+    finish_task(ui)
+    equal(prompts, 2)
+    equal(vim.uv.fs_realpath(ui.state.session.path), vim.uv.fs_realpath(pending.path))
+    equal(#core.worktrees(bare), 2)
+    vim.ui.select = previous
+    ui.pull_requests(repository, true)
+    finish_task(ui)
+  end)
 
   test("picker opens a real editable file beside a read-only merge base", function()
     local ui = require("review.ui")

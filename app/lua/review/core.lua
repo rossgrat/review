@@ -225,6 +225,8 @@ function M.worktrees(path)
       local key, value = field:match("^(%S+) (.*)$")
       if key == "worktree" then item.path = value end
       if key == "branch" then item.branch = value end
+      if field == "bare" then item.bare = true end
+      if key == "prunable" or field == "prunable" then item.prunable = true end
     end
   end
   return result
@@ -246,7 +248,7 @@ local function remote_for(path, repository, push)
   return repository.ssh_url
 end
 
-function M.prepare(repo, pr, worktree_root)
+function M.prepare(repo, pr, worktree_root, before_update)
   assert(pr.head.repo ~= vim.NIL and pr.head.repo, "The PR source repository no longer exists")
   local prefix = "refs/pr-review/" .. pr.number
   local base_ref, head_ref = pr.base.sha, pr.head.sha
@@ -289,11 +291,71 @@ function M.prepare(repo, pr, worktree_root)
       branch = "pr-review/" .. pr.number
     end
   end
-  local tree
-  for _, candidate in ipairs(M.worktrees(repo.path)) do
-    if candidate.branch == "refs/heads/" .. branch and uv.fs_stat(candidate.path) then
+  local trees, tree = M.worktrees(repo.path), nil
+  local managed = vim.fn.stdpath("data") .. "/worktrees/"
+  for _, candidate in ipairs(trees) do
+    if
+      candidate.branch == "refs/heads/" .. branch
+      and not candidate.prunable
+      and uv.fs_stat(candidate.path)
+    then
       tree = candidate.path
       break
+    end
+  end
+  if not tree or tree:sub(1, #managed) == managed then
+    local aliases = {}
+    local tracking = M.git(
+      repo.path,
+      { "for-each-ref", "--format=%(refname)%09%(upstream:remotename)%09%(upstream:remoteref)", "refs/heads" }
+    )
+    for line in tracking:gmatch("[^\n]+") do
+      local ref, remote, upstream = line:match("^([^\t]+)\t([^\t]*)\t(.*)$")
+      if remote and remote ~= "" and upstream == "refs/heads/" .. pr.head.ref then aliases[ref] = remote end
+    end
+    for _, candidate in ipairs(trees) do
+      if
+        candidate.branch
+        and not candidate.prunable
+        and aliases[candidate.branch]
+        and uv.fs_stat(candidate.path)
+        and candidate.path:sub(1, #managed) ~= managed
+        and slug(trimmed(repo.path, { "remote", "get-url", aliases[candidate.branch] }))
+          == pr.head.repo.full_name
+      then
+        tree, branch = candidate.path, candidate.branch:sub(#"refs/heads/" + 1)
+        break
+      end
+    end
+  end
+  if not tree and not worktree_root then
+    local usable, others, selected_bare = {}, {}, false
+    local selected_path = uv.fs_realpath(repo.path)
+    for _, candidate in ipairs(trees) do
+      if uv.fs_realpath(candidate.path) == selected_path and candidate.bare then selected_bare = true end
+      if not candidate.bare and not candidate.prunable and uv.fs_stat(candidate.path) then
+        if uv.fs_realpath(candidate.path) == selected_path then
+          usable = { candidate }
+        else
+          others[#others + 1] = candidate
+        end
+      end
+    end
+    if #usable == 0 and selected_bare and #others == 1 then usable = others end
+    for _, candidate in ipairs(usable) do
+      if M.git(candidate.path, { "status", "--porcelain=v1" }) == "" then
+        if before_update then before_update() end
+        local _, branch_exists = M.git(repo.path, { "show-ref", "--verify", "refs/heads/" .. branch }, true)
+        local args = { "switch", "--no-overwrite-ignore" }
+        if branch_exists == 0 then
+          args[#args + 1] = branch
+        else
+          vim.list_extend(args, { "--create", branch, head_ref })
+        end
+        M.git(candidate.path, args)
+        tree = candidate.path
+        break
+      end
     end
   end
   if not tree then
@@ -301,8 +363,10 @@ function M.prepare(repo, pr, worktree_root)
       or trimmed(repo.path, { "rev-parse", "--path-format=absolute", "--git-common-dir" })
     local root = worktree_root
       or (vim.fn.stdpath("data") .. "/worktrees/" .. vim.fn.sha256(common):sub(1, 16))
-    vim.fn.mkdir(root, "p")
     tree = root .. "/pr-" .. pr.number
+    if not worktree_root then return { needs_worktree = true, path = tree, root = root, branch = branch } end
+    if before_update then before_update() end
+    vim.fn.mkdir(root, "p")
     local _, branch_exists = M.git(repo.path, { "show-ref", "--verify", "refs/heads/" .. branch }, true)
     local args = { "worktree", "add" }
     if branch_exists ~= 0 then
@@ -312,16 +376,54 @@ function M.prepare(repo, pr, worktree_root)
     end
     M.git(repo.path, args)
   end
-  local base = trimmed(tree, { "merge-base", base_ref, "HEAD" })
   local counts = trimmed(tree, { "rev-list", "--left-right", "--count", head_ref .. "...HEAD" })
   local behind, ahead = counts:match("(%d+)%s+(%d+)")
+  behind, ahead = tonumber(behind), tonumber(ahead)
+  local warning, backup
+  if behind > 0 then
+    if M.git(tree, { "status", "--porcelain=v1" }) ~= "" then
+      warning =
+        "GitHub has newer commits. Local changes prevent an automatic update. Stash them, pull, then reapply them."
+    elseif ahead == 0 then
+      if before_update then before_update() end
+      M.git(tree, { "merge", "--ff-only", "--no-edit", "--no-overwrite-ignore", head_ref })
+      behind = 0
+    else
+      local previous = trimmed(tree, { "rev-parse", "HEAD" })
+      local prefix = "pr-review/" .. pr.number .. "-before-pull-" .. previous:sub(1, 12)
+      local suffix = 0
+      backup = prefix
+      if before_update then before_update() end
+      while true do
+        local existing, code = M.git(tree, { "rev-parse", "--verify", "refs/heads/" .. backup }, true)
+        if code == 0 and vim.trim(existing) == previous and backup ~= branch then break end
+        if code ~= 0 and backup ~= branch then
+          M.git(tree, { "branch", backup, previous })
+          break
+        end
+        suffix = suffix + 1
+        backup = prefix .. "-" .. suffix
+      end
+      if before_update then before_update() end
+      assert(
+        trimmed(tree, { "branch", "--show-current" }) == branch
+          and trimmed(tree, { "rev-parse", "HEAD" }) == previous,
+        "The checkout changed while pulling. Pull again."
+      )
+      M.git(tree, { "switch", "--no-overwrite-ignore", "--force-create", branch, head_ref })
+      ahead, behind = 0, 0
+    end
+  end
+  local base = trimmed(tree, { "merge-base", base_ref, "HEAD" })
   return {
     path = tree,
     base = base,
     pr = pr,
     branch = branch,
-    ahead = tonumber(ahead),
-    behind = tonumber(behind),
+    ahead = ahead,
+    behind = behind,
+    warning = warning,
+    backup = backup,
   }
 end
 

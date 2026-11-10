@@ -77,7 +77,7 @@ The file list refreshes after each save.
 | Space, then `b` | Undo the last Next step and return to that file |
 | Space, then `c`, then `c` | Commit and push saved changes in the selected PR worktree |
 | Space, then `p` | Return to the PR list |
-| Space, then `r` | Refresh local changes |
+| Space, then `r` | Pull latest PR updates and reload clean files |
 | Space, then `q` | Quit Review |
 | `q` in a list | Return to the previous list |
 | `:q` or `:ReviewQuit` | Quit the whole application |
@@ -132,7 +132,11 @@ Other layouts use Git, with up to eight commands in parallel.
 The GitHub query loads repository identity and PR fields together.
 Returning to a PR list reuses its result for up to 30 seconds.
 Press `r` on that screen to fetch a fresh list.
-Opening a PR always reads its current GitHub metadata.
+
+Opening a PR reads its current GitHub metadata and updates a clean checkout to the latest source commit.
+Press Space, then `r`, or use `:ReviewPull` to pull again while reviewing code.
+This preserves the selected file, cursor position, and sidebar selection where possible.
+Saving a file refreshes the local diff without a GitHub request.
 The loading dialog appears before repository discovery or network requests start.
 
 Read-only base content is cached by commit and file path for the open PR.
@@ -169,12 +173,25 @@ The editor compares this commit with the local worktree, a separate checkout.
 This comparison includes committed changes, staged changes, unstaged changes, and new files.
 Git-ignored files stay excluded.
 
-The application reuses an existing worktree for the source branch, including external worktrees.
-It preserves existing commits and local edits.
-If no worktree exists, it creates one under the separate application's data directory.
+The application searches the selected repository's registered worktrees, including checkouts outside the opened directory.
+It prefers an existing source checkout, including a local branch that tracks the PR source branch.
+If the branch is not checked out, it switches the selected clean checkout to that branch.
+It does not switch unrelated worktrees to another branch.
+If no clean checkout is available, it offers to create a worktree and requires your choice.
+It never creates one silently.
+
+Use `:pwd` to see the active checkout directory.
+
+Updates use a fast-forward, which advances a branch without dropping commits.
+If clean histories diverge, Review saves the local tip on a backup branch and follows GitHub automatically.
+The update message names that backup branch.
+Use `:messages` to read recent update messages and backup branch names.
+Local uncommitted edits block updates and produce an explanation.
+Resolve the reported issue before pulling again.
+
 If a fork's branch name conflicts locally, it uses `pr-review/<number>`.
 The status line shows when the local branch differs from the GitHub branch.
-The application does not automatically pull or stash changes.
+The application does not automatically stash changes or rewrite branch history.
 Commits and pushes require the shortcut and its confirmation.
 
 Repository discovery searches nested directories and groups linked worktrees by repository.

@@ -16,11 +16,37 @@ local ok, err = xpcall(function()
   end
   assert(found, "PR is absent from the live open PR list")
   local pr = core.pull_request(repo, number)
+  local existing = root .. "/existing-checkout"
+  core.git(repo.path, { "worktree", "add", "--detach", existing, "HEAD" })
+  local tree_count = #core.worktrees(repo.path)
+  local previous, existed =
+    core.git(repo.path, { "rev-parse", "--verify", "refs/heads/" .. pr.head.ref }, true)
   local started = vim.uv.hrtime()
-  local session = core.prepare(repo, pr, root .. "/worktrees")
+  local session = core.prepare(repo, pr)
+  assert(not session.needs_worktree, "An existing clean checkout must be reused")
+  assert(vim.uv.fs_realpath(session.path) == vim.uv.fs_realpath(existing))
+  local actual = vim.trim(core.git(session.path, { "rev-parse", "HEAD" }))
+  assert(
+    actual == pr.head.sha,
+    vim.inspect({
+      actual = actual,
+      expected = pr.head.sha,
+      branch = session.branch,
+      warning = session.warning,
+      ahead = session.ahead,
+      behind = session.behind,
+      status = core.git(session.path, { "status", "--porcelain=v1" }),
+    })
+  )
+  assert(#core.worktrees(repo.path) == tree_count, "Preparation must not create another worktree")
+  if session.backup then
+    assert(existed == 0)
+    assert(vim.trim(core.git(repo.path, { "rev-parse", session.backup })) == vim.trim(previous))
+    print("Preserved previous branch tip on " .. session.backup)
+  end
   print(string.format("First PR preparation: %.0f ms", (vim.uv.hrtime() - started) / 1e6))
   started = vim.uv.hrtime()
-  local reopened = core.prepare(repo, pr, root .. "/worktrees")
+  local reopened = core.prepare(repo, pr)
   assert(vim.uv.fs_realpath(reopened.path) == vim.uv.fs_realpath(session.path))
   print(string.format("Repeated PR preparation: %.0f ms", (vim.uv.hrtime() - started) / 1e6))
   local files = core.changes(session)

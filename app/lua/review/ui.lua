@@ -498,7 +498,7 @@ function M.commit_push()
             end,
             true,
             function(commit)
-              M.refresh()
+              M.refresh(false)
               vim.notify("Pushed " .. commit:sub(1, 8) .. " to " .. plan.destination)
             end
           )
@@ -539,8 +539,12 @@ local function tree_action(action)
   end
 end
 
-function M.refresh()
+function M.refresh(remote)
   if not state.session then return end
+  if remote ~= false then
+    M.open(state.session.pr, true)
+    return
+  end
   task("Refreshing local changes...", function()
     files()
     local selected
@@ -560,12 +564,15 @@ function M.refresh()
   end)
 end
 
-local function review(session)
+local function review(session, position)
   state.session = session
   state.selected, state.tree_rows, state.collapsed = nil, nil, {}
   local key = (state.repo.common or state.repo.path) .. "/" .. session.pr.number
   state.reviews[key] = state.reviews[key] or {}
   state.viewed, state.auto_collapsed = state.reviews[key], {}
+  if position then
+    state.collapsed, state.auto_collapsed = position.collapsed, position.auto_collapsed
+  end
   local history = state.review_history[key]
   if not history or history.base ~= session.base then
     history = { base = session.base, steps = {} }
@@ -623,29 +630,110 @@ local function review(session)
   files()
   local first
   for _, row in ipairs(tree.rows(state.files, {}, state.viewed)) do
-    if row.file and not state.viewed[row.path] then
+    if row.file and position and row.path == position.path then
       first = row.file
       break
+    elseif row.file and not (position and position.path) and not state.viewed[row.path] and not first then
+      first = row.file
     end
   end
-  if first or state.files[1] then show_file(first or state.files[1]) end
+  local missing_selection = position and position.path and not first
+  if not missing_selection and (first or state.files[1]) then show_file(first or state.files[1]) end
+  if position then
+    if position.list_path then
+      for line, row in pairs(state.tree_rows) do
+        if row.path == position.list_path then
+          api.nvim_win_set_cursor(state.list, { line, 0 })
+          break
+        end
+      end
+    end
+    if state.selected == position.path then
+      local buffer = api.nvim_win_get_buf(state.right)
+      local row = math.min(position.cursor[1], api.nvim_buf_line_count(buffer))
+      local line = api.nvim_buf_get_lines(buffer, row - 1, row, false)[1]
+      api.nvim_win_set_cursor(state.right, { row, math.min(position.cursor[2], #line) })
+    end
+    api.nvim_set_current_win(state[position.focus])
+  end
   local group = api.nvim_create_augroup("PRReviewRefresh", { clear = true })
   api.nvim_create_autocmd("BufWritePost", {
     group = group,
     callback = function()
-      if state.session == session and api.nvim_win_is_valid(state.list) then M.refresh() end
+      if state.session == session and api.nvim_win_is_valid(state.list) then M.refresh(false) end
     end,
   })
 end
 
-function M.open(pr)
-  if not saved() then return end
-  task("Preparing PR #" .. pr.number .. "...", function()
-    local fresh = core.pull_request(state.repo, pr.number)
-    local session = core.prepare(state.repo, fresh)
-    vim.cmd.cd(vim.fn.fnameescape(session.path))
-    review(session)
-  end, true)
+local function reload_buffers(path)
+  local prefix = vim.uv.fs_realpath(path) .. "/"
+  vim.cmd("diffoff!")
+  for _, buffer in ipairs(api.nvim_list_bufs()) do
+    local name = api.nvim_buf_get_name(buffer)
+    local real = vim.uv.fs_realpath(name)
+    if
+      api.nvim_buf_is_loaded(buffer)
+      and vim.bo[buffer].buftype == ""
+      and not vim.bo[buffer].modified
+      and real
+      and real:sub(1, #prefix) == prefix
+      and vim.fn.filereadable(name) == 1
+    then
+      api.nvim_buf_call(buffer, function() vim.cmd("silent edit") end)
+    end
+  end
+end
+
+function M.open(pr, keep_position, worktree_root)
+  if not saved(keep_position and "Save your edits before pulling PR updates." or nil) then return end
+  help.close()
+  local repo, position = state.repo, nil
+  local function before_update()
+    if not saved("Save your edits before pulling PR updates.") then
+      error("Pull stopped because edits became unsaved.", 0)
+    end
+  end
+  if keep_position then
+    local current = api.nvim_get_current_win()
+    local selected_row = state.tree_rows[api.nvim_win_get_cursor(state.list)[1]]
+    position = {
+      list_path = selected_row and selected_row.path,
+      path = state.selected,
+      cursor = api.nvim_win_get_cursor(state.right),
+      focus = current == state.list and "list" or current == state.left and "left" or "right",
+      collapsed = vim.deepcopy(state.collapsed),
+      auto_collapsed = vim.deepcopy(state.auto_collapsed),
+    }
+  end
+  task(
+    "Preparing PR #" .. pr.number .. "...",
+    function()
+      local fresh = core.pull_request(repo, pr.number)
+      before_update()
+      local session = core.prepare(repo, fresh, worktree_root, before_update)
+      if session.needs_worktree then return session end
+      before_update()
+      reload_buffers(session.path)
+      vim.cmd.cd(vim.fn.fnameescape(session.path))
+      review(session, position)
+      if session.warning then
+        vim.schedule(function() vim.notify(session.warning, vim.log.levels.WARN) end)
+      elseif session.backup then
+        vim.schedule(
+          function() vim.notify("Updated to GitHub. Previous local commits are saved on " .. session.backup) end
+        )
+      end
+    end,
+    true,
+    function(pending)
+      if not pending then return end
+      vim.ui.select({ "Cancel", "Create worktree" }, {
+        prompt = "No clean existing checkout is available. Create " .. pending.path .. "?",
+      }, function(choice)
+        if choice == "Create worktree" and state.repo == repo then M.open(pr, keep_position, pending.root) end
+      end)
+    end
+  )
 end
 
 function M.start(directory)
@@ -654,6 +742,7 @@ function M.start(directory)
   api.nvim_create_user_command("ReviewQuit", "qall<bang>", { bang = true, force = true })
   api.nvim_create_user_command("ReviewNext", M.next_file, { force = true })
   api.nvim_create_user_command("ReviewBack", M.undo_next, { force = true })
+  api.nvim_create_user_command("ReviewPull", function() M.refresh() end, { force = true })
   api.nvim_create_user_command("ReviewCommitPush", M.commit_push, { force = true })
   local function instructions()
     if not state.busy then help.toggle() end
