@@ -93,7 +93,10 @@ Completed folders collapse. Saving a viewed file makes it unviewed again.]],
   })
   vim.cmd("diffoff")
   vim.wo.wrap = true
+  vim.wo.linebreak = true
+  vim.wo.breakindent = true
   vim.wo.cursorline = false
+  vim.wo.statusline = " PR Review %= Esc / q / Enter close    j/k scroll "
   vim.wo.winhighlight =
     "Normal:ReviewPanel,FloatBorder:ReviewBorder,FloatTitle:ReviewTitle,FloatFooter:ReviewMuted"
   local namespace = api.nvim_create_namespace("PRReviewHelp")
