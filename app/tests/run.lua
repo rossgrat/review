@@ -87,13 +87,24 @@ local ok, err = xpcall(function()
   put(repo .. "/app.txt", "base\n")
   put(repo .. "/old name.txt", "rename me\n")
   put(repo .. "/remove.txt", "remove me\n")
+  put(repo .. "/binary.dat", "original\0bytes")
+  put(repo .. "/empty.txt", "")
   vim.fn.mkdir(repo .. "/internal/catalog", "p")
   put(
     repo .. "/internal/catalog/item.go",
     'package catalog\n\nfunc Label(name string) string {\n\treturn "Item: " + name\n}\n'
   )
   put(repo .. "/.gitignore", "*.ignored\n")
-  git({ "add", "app.txt", "old name.txt", "remove.txt", ".gitignore", "internal/catalog/item.go" })
+  git({
+    "add",
+    "app.txt",
+    "old name.txt",
+    "remove.txt",
+    "binary.dat",
+    "empty.txt",
+    ".gitignore",
+    "internal/catalog/item.go",
+  })
   commit("Baseline")
   git({ "switch", "-c", "feature-a" })
   put(repo .. "/app.txt", "base\nparent\n")
@@ -177,6 +188,47 @@ local ok, err = xpcall(function()
     finish_task(ui)
   end)
 
+  test(
+    "ordinary metadata stays fresh without Git processes for linked, detached, and bare repositories",
+    function()
+      local linked = catalog .. "/linked"
+      local pointer = get(linked .. "/.git")
+      local admin = vim.trim(core.git(linked, { "rev-parse", "--absolute-git-dir" }))
+      put(linked .. "/.git", "gitdir: ../example/.git/worktrees/" .. vim.fs.basename(admin) .. "\n")
+      local original, calls = core.run, 0
+      core.run = function(...)
+        calls = calls + 1
+        return original(...)
+      end
+      local found = core.discover(linked)
+      equal(calls, 0)
+      equal(found[1].common, vim.uv.fs_realpath(repo .. "/.git"))
+      equal(found[1].branch, "main")
+      core.run = original
+      core.git(linked, { "switch", "-c", "discovery/check" })
+      equal(core.discover(linked)[1].branch, "discovery/check")
+      core.git(linked, { "switch", "--detach" })
+      equal(core.discover(linked)[1].branch, "detached")
+      core.git(linked, { "switch", "main" })
+      put(linked .. "/.git", pointer)
+      equal(core.discover(remote)[1].branch, "main")
+    end
+  )
+
+  test("nonstandard metadata uses Git and malformed repositories stay excluded", function()
+    local path = root .. "/reftable"
+    core.run({ "git", "init", "--ref-format=reftable", "--initial-branch=table-main", path })
+    local discovered = core.discover(path)
+    equal(#discovered, 1)
+    equal(discovered[1].branch, "table-main")
+    core.git(path, { "symbolic-ref", "HEAD", "refs/heads/renamed-table" })
+    equal(core.discover(path)[1].branch, "renamed-table")
+    local broken = root .. "/broken"
+    vim.fn.mkdir(broken, "p")
+    put(broken .. "/.git", "not a Git pointer\n")
+    equal(#core.discover(broken), 0)
+  end)
+
   test("existing dirty worktree is reused without changing the parent checkout", function()
     local original_git, fetched = core.git, false
     core.git = function(path, args, ...)
@@ -214,6 +266,37 @@ local ok, err = xpcall(function()
     equal(by_path["parent.txt"], nil)
     equal(by_path["later-parent.txt"], nil)
     equal(by_path["skip.ignored"], nil)
+  end)
+
+  test("base content is reused without hiding local edits or a different comparison base", function()
+    local selected = { path = outside, base = parent }
+    local file = { status = "M", path = "app.txt", old_path = "app.txt" }
+    local original, calls = core.git, 0
+    core.git = function(path, args, ...)
+      if args[1] == "show" then calls = calls + 1 end
+      return original(path, args, ...)
+    end
+    equal(core.original(selected, file), "base\nparent\n")
+    equal(core.original(selected, file), "base\nparent\n")
+    equal(calls, 1)
+    local saved = get(outside .. "/app.txt")
+    put(outside .. "/app.txt", saved .. "local edit\n")
+    equal(core.original(selected, file), "base\nparent\n")
+    equal(calls, 1)
+    put(outside .. "/app.txt", saved)
+    selected.base = child
+    equal(core.original(selected, file), "base\nparent\nchild\n")
+    equal(calls, 2)
+    selected.base = parent
+    equal(core.original(selected, file), "base\nparent\n")
+    equal(calls, 2)
+    equal(core.original(selected, { status = "M", old_path = "binary.dat" }), "original\0bytes")
+    equal(core.original(selected, { status = "M", old_path = "binary.dat" }), "original\0bytes")
+    equal(calls, 3)
+    equal(core.original(selected, { status = "M", old_path = "empty.txt" }), "")
+    equal(core.original(selected, { status = "M", old_path = "empty.txt" }), "")
+    equal(calls, 4)
+    core.git = original
   end)
 
   test("missing local branch gets its own worktree at the PR head", function()

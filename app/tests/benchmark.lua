@@ -33,6 +33,18 @@ if arg[2] then
   if prs and prs[1] then
     local pr = measure("PR detail", function() return core.pull_request(repo, prs[1].number) end)
     if pr then
+      local paths = core.git(repo.path, { "ls-tree", "-r", "--name-only", pr.base.sha })
+      local path = paths:match("[^\n]+")
+      if path then
+        local session = { path = repo.path, base = pr.base.sha }
+        local file = { status = "M", path = path, old_path = path }
+        measure("Base file first read", function() return core.original(session, file) end)
+        measure("Base file reread x30", function()
+          for _ = 1, 30 do
+            core.original(session, file)
+          end
+        end)
+      end
       measure("Local PR objects", function()
         for _, sha in ipairs({ pr.base.sha, pr.head.sha }) do
           local _, code = core.git(repo.path, { "cat-file", "-e", sha .. "^{commit}" }, true)

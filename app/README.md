@@ -119,12 +119,17 @@ It does not create another commit.
 
 ## Loading
 
-Repository discovery runs up to eight local Git commands in parallel.
+Repository discovery reads standard Git metadata directly.
+Other layouts use Git, with up to eight commands in parallel.
 The GitHub query loads repository identity and PR fields together.
 Returning to a PR list reuses its result for up to 30 seconds.
 Press `r` on that screen to fetch a fresh list.
 Opening a PR always reads its current GitHub metadata.
 The loading dialog appears before repository discovery or network requests start.
+
+Read-only base content is cached by commit and file path for the open PR.
+The cache holds up to 8 MiB of base content.
+Reopening files and refreshing saved edits can reuse this content without another Git process.
 
 On November 9, 2026, one run over 76 repositories produced these results:
 
@@ -134,6 +139,17 @@ On November 9, 2026, one run over 76 repositories produced these results:
 | GitHub PR list | 1.45 seconds | 0.74 seconds |
 
 Network timings vary between runs.
+
+On November 10, 2026, another pass over 73 repositories produced these results:
+
+| Operation | Before this pass | After this pass |
+| --- | --- | --- |
+| Repository discovery | 361 ms | 35–74 ms |
+| Git processes for discovery | 173 | 7 |
+| 30 repeated base-file reads | 489 ms | Less than 1 ms |
+
+The discovered repositories and branch labels matched the previous implementation.
+Fresh GitHub requests still took about 0.6–1 second in these runs.
 
 ## Comparisons and worktrees
 
@@ -188,5 +204,6 @@ nvim --headless --noplugin -i NONE -u NONE -l tests/benchmark.lua /path/to/repos
 [GitHub PR branches](https://docs.github.com/en/pull-requests/reference/branches)
 describes PR targets and comparisons.
 [Git worktrees](https://git-scm.com/docs/git-worktree) describes separate checkouts.
+[Git repository layout](https://git-scm.com/docs/gitrepository-layout) describes the metadata used for repository discovery.
 [Neovim application isolation](https://neovim.io/doc/user/starting.html#%24NVIM_APPNAME)
 describes separate application directories.

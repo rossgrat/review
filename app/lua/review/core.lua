@@ -1,5 +1,6 @@
 local M = {}
 local uv = vim.uv
+local user_id = uv.os_get_passwd().uid
 
 function M.run(args, cwd, allow_failure, input)
   local result
@@ -59,6 +60,68 @@ local function parallel(items, fn)
   if failure then error(failure, 0) end
 end
 
+local function read_file(path)
+  local file = io.open(path, "rb")
+  if not file then return end
+  local contents = file:read("*a")
+  file:close()
+  return contents
+end
+
+local function resolve(directory, path)
+  return uv.fs_realpath(path:sub(1, 1) == "/" and path or directory .. "/" .. path)
+end
+
+local function repository_metadata(path)
+  if vim.env.GIT_DIR or vim.env.GIT_COMMON_DIR or vim.env.GIT_WORK_TREE then return end
+  local git_dir = path .. "/.git"
+  local stat = uv.fs_stat(git_dir)
+  if not stat then
+    git_dir = path
+  elseif stat.type == "file" then
+    local target = (read_file(git_dir) or ""):match("^gitdir: ([^\r\n]+)[\r\n]*$")
+    if not target then return end
+    git_dir = resolve(path, target)
+  elseif stat.type ~= "directory" then
+    return
+  end
+  if not git_dir then return end
+  git_dir = uv.fs_realpath(git_dir)
+  if not git_dir then return end
+  local common = git_dir
+  local shared = read_file(git_dir .. "/commondir")
+  if shared then
+    local target = shared:match("^([^\r\n]+)[\r\n]*$")
+    common = target and resolve(git_dir, target)
+  end
+  if not common then return end
+  for _, directory in ipairs({ path, git_dir, common }) do
+    stat = uv.fs_stat(directory)
+    if not stat or stat.uid ~= user_id then return end
+  end
+  local objects, refs = uv.fs_stat(common .. "/objects"), uv.fs_stat(common .. "/refs")
+  if not objects or objects.type ~= "directory" or not refs or refs.type ~= "directory" then return end
+  local config = read_file(common .. "/config")
+  if not config then return end
+  local section, version
+  for line in config:gmatch("[^\r\n]+") do
+    local header = line:match("^%s*%[([^%]]+)%]")
+    if header then
+      section = vim.trim(header):lower()
+      if section == "extensions" or section:match("^include") then return end
+    elseif section == "core" then
+      version = line:lower():match("^%s*repositoryformatversion%s*=%s*(%S+)") or version
+    end
+  end
+  if version ~= "0" then return end
+  stat = uv.fs_lstat(git_dir .. "/HEAD")
+  if not stat or stat.type ~= "file" then return end
+  local head = (read_file(git_dir .. "/HEAD") or ""):gsub("[\r\n]+$", "")
+  local branch = head:match("^ref: refs/heads/(%S+)$")
+  if branch and branch:sub(1, 1) ~= "." then return { common = common, branch = branch } end
+  if #head == 40 and head:match("^%x+$") then return { common = common, branch = "detached" } end
+end
+
 function M.discover(directory)
   local candidates, metadata, found, seen = {}, {}, {}, {}
   local function visit(path)
@@ -80,20 +143,23 @@ function M.discover(directory)
   assert(directory, "Directory does not exist")
   visit(directory)
   parallel(candidates, function(path, index)
+    metadata[index] = repository_metadata(path)
+    if metadata[index] then return end
     local common, code = M.git(path, { "rev-parse", "--path-format=absolute", "--git-common-dir" }, true)
-    if code == 0 then metadata[index] = uv.fs_realpath(vim.trim(common)) end
+    if code == 0 then
+      local branch = vim.trim(M.git(path, { "symbolic-ref", "--quiet", "--short", "HEAD" }, true))
+      metadata[index] =
+        { common = uv.fs_realpath(vim.trim(common)), branch = branch ~= "" and branch or "detached" }
+    end
   end)
   for index, path in ipairs(candidates) do
-    local common = metadata[index]
+    local common = metadata[index] and metadata[index].common
     if common and not seen[common] then
       seen[common] = true
-      found[#found + 1] = { path = path, common = common, name = vim.fs.basename(path) }
+      found[#found + 1] =
+        { path = path, common = common, name = vim.fs.basename(path), branch = metadata[index].branch }
     end
   end
-  parallel(found, function(repo)
-    local branch = vim.trim(M.git(repo.path, { "symbolic-ref", "--quiet", "--short", "HEAD" }, true))
-    repo.branch = branch ~= "" and branch or "detached"
-  end)
   table.sort(found, function(a, b)
     if a.name:lower() == b.name:lower() then return a.path < b.path end
     return a.name:lower() < b.name:lower()
@@ -381,7 +447,15 @@ end
 
 function M.original(session, file)
   if file.status == "?" or file.status == "A" then return "" end
-  return M.git(session.path, { "show", session.base .. ":" .. file.old_path })
+  local key = session.base .. ":" .. file.old_path
+  session.originals = session.originals or {}
+  if session.originals[key] ~= nil then return session.originals[key] end
+  local contents = M.git(session.path, { "show", key })
+  local size = session.original_bytes or 0
+  if size + #contents <= 8 * 1024 * 1024 then
+    session.originals[key], session.original_bytes = contents, size + #contents
+  end
+  return contents
 end
 
 return M
