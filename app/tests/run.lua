@@ -421,6 +421,63 @@ local ok, err = xpcall(function()
     assert(found_stale, "Git must identify stale registrations even when their directories remain")
   end)
 
+  test("a missing PR worktree releases only its stale registration before checkout", function()
+    local checkout, missing, unrelated =
+      root .. "/stale-repo", root .. "/missing-pr", root .. "/missing-other"
+    core.run({ "git", "clone", "--shared", repo, checkout })
+    local head = vim.trim(core.git(checkout, { "rev-parse", "HEAD" }))
+    core.git(checkout, { "worktree", "add", "-b", "missing-pr", missing, "HEAD" })
+    core.git(checkout, { "worktree", "add", "-b", "missing-other", unrelated, "HEAD" })
+    vim.fn.delete(missing, "rf")
+    vim.fn.delete(unrelated, "rf")
+    local project = { full_name = "example/stale" }
+    local selected = {
+      number = 21,
+      base = { ref = "main", sha = head, repo = project },
+      head = { ref = "missing-pr", sha = head, repo = project },
+    }
+    local opened = core.prepare({ path = checkout }, selected)
+    equal(opened.path, checkout)
+    equal(opened.branch, "missing-pr")
+    equal(vim.trim(core.git(checkout, { "rev-parse", "refs/heads/missing-pr" })), head)
+    local trees = core.worktrees(checkout)
+    equal(#trees, 2)
+    equal(trees[2].path, unrelated)
+    equal(trees[2].prunable, true)
+    equal(vim.uv.fs_stat(missing), nil)
+  end)
+
+  test("unavailable worktrees preserve locked registrations and remaining local files", function()
+    for _, locked in ipairs({ false, true }) do
+      local checkout = root .. (locked and "/locked-repo" or "/broken-repo")
+      local missing = checkout .. "-worktree"
+      core.run({ "git", "clone", "--shared", repo, checkout })
+      local head = vim.trim(core.git(checkout, { "rev-parse", "HEAD" }))
+      core.git(checkout, { "worktree", "add", "-b", "unavailable", missing, "HEAD" })
+      if locked then
+        core.git(checkout, { "worktree", "lock", "--reason", "External drive", missing })
+        vim.fn.delete(missing, "rf")
+      else
+        vim.uv.fs_unlink(missing .. "/.git")
+        put(missing .. "/unsaved.txt", "preserve these local edits\n")
+      end
+      local project = { full_name = "example/unavailable" }
+      local selected = {
+        number = 22,
+        base = { ref = "main", sha = head, repo = project },
+        head = { ref = "unavailable", sha = head, repo = project },
+      }
+      local before = core.git(checkout, { "worktree", "list", "--porcelain", "-z" })
+      local ok, message = pcall(core.prepare, { path = checkout }, selected)
+      equal(ok, false)
+      assert(message:find("unavailable worktree", 1, true))
+      assert(message:find(missing, 1, true))
+      equal(core.git(checkout, { "worktree", "list", "--porcelain", "-z" }), before)
+      equal(vim.trim(core.git(checkout, { "rev-parse", "refs/heads/unavailable" })), head)
+      if not locked then equal(get(missing .. "/unsaved.txt"), "preserve these local edits\n") end
+    end
+  end)
+
   local bin = root .. "/bin"
   vim.fn.mkdir(bin, "p")
   put(

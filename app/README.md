@@ -186,6 +186,9 @@ Git-ignored files stay excluded.
 
 The application searches the selected repository's registered worktrees, including checkouts outside the opened directory.
 It prefers an existing source checkout, including a local branch that tracks the PR source branch.
+If Git still reserves the PR branch for a deleted worktree, Review removes that stale registration automatically.
+It preserves the branch, commits, and unrelated worktree registrations.
+Locked or inaccessible checkouts and directories that still contain files require repair before Review can use that branch.
 If the branch is not checked out, it switches the selected clean checkout to that branch.
 It does not switch unrelated worktrees to another branch.
 If no clean checkout is available, it offers to create a worktree and requires your choice.

@@ -291,16 +291,15 @@ function M.prepare(repo, pr, worktree_root, before_update)
       branch = "pr-review/" .. pr.number
     end
   end
-  local trees, tree = M.worktrees(repo.path), nil
+  local trees, tree, unavailable = M.worktrees(repo.path), nil, nil
   local managed = vim.fn.stdpath("data") .. "/worktrees/"
   for _, candidate in ipairs(trees) do
-    if
-      candidate.branch == "refs/heads/" .. branch
-      and not candidate.prunable
-      and uv.fs_stat(candidate.path)
-    then
-      tree = candidate.path
-      break
+    if candidate.branch == "refs/heads/" .. branch then
+      if not candidate.prunable and uv.fs_stat(candidate.path) then
+        tree = candidate.path
+        break
+      end
+      unavailable = candidate
     end
   end
   if not tree or tree:sub(1, #managed) == managed then
@@ -327,6 +326,17 @@ function M.prepare(repo, pr, worktree_root, before_update)
         break
       end
     end
+  end
+  if not tree and unavailable then
+    if before_update then before_update() end
+    local _, _, code = uv.fs_lstat(unavailable.path)
+    assert(
+      unavailable.prunable and code == "ENOENT",
+      "The PR branch is reserved by an unavailable worktree at "
+        .. vim.fn.strtrans(unavailable.path)
+        .. ". Restore or repair that checkout, then reopen the PR."
+    )
+    M.git(repo.path, { "worktree", "remove", "--", unavailable.path })
   end
   if not tree and not worktree_root then
     local usable, others, selected_bare = {}, {}, false
