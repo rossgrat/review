@@ -212,7 +212,43 @@ function M.pull_request(repo, number)
     M.run({ "gh", "api", "--method", "GET", "repos/" .. repo.slug .. "/pulls/" .. number }, repo.path)
   local pr = vim.json.decode(response)
   assert(pr.state == "open", "This PR is no longer open. Refresh the PR list.")
+  pr.body = type(pr.body) == "string" and pr.body or ""
   return pr
+end
+
+function M.publish_description(repo, pr, body)
+  local current = M.pull_request(repo, pr.number)
+  assert(
+    current.body == pr.body or current.body == body,
+    "The PR description changed on GitHub. Copy your edits, then reopen the editor to load the latest version."
+  )
+  if current.body ~= body then
+    M.run(
+      { "gh", "pr", "edit", tostring(pr.number), "--repo", repo.slug, "--body-file", "-" },
+      repo.path,
+      false,
+      body
+    )
+  end
+  pr.body = body
+  if current.draft then
+    local _, code, message =
+      M.run({ "gh", "pr", "ready", tostring(pr.number), "--repo", repo.slug }, repo.path, true)
+    assert(
+      code == 0,
+      "Description saved, but marking the PR ready failed. Retry to finish.\n" .. vim.trim(message)
+    )
+  end
+  local published = M.pull_request(repo, pr.number)
+  assert(
+    published.body == body,
+    "The description on GitHub differs from your edits. Keep your text and reload the PR."
+  )
+  assert(
+    not published.draft,
+    "Description saved, but GitHub still reports this PR as a draft. Retry to refresh its state."
+  )
+  return published
 end
 
 function M.worktrees(path)

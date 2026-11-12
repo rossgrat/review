@@ -2,6 +2,7 @@ local core = require("review.core")
 local tree = require("review.tree")
 local help = require("review.help")
 local browse = require("review.browse")
+local description = require("review.description")
 local M = {}
 local api = vim.api
 local state = { pr_cache = {}, reviews = {}, review_history = {}, generated_expanded = {} }
@@ -588,6 +589,58 @@ function M.commit_push()
   )
 end
 
+function M.ready()
+  if not state.session or state.busy then return end
+  if description.valid(state.description) then
+    api.nvim_set_current_win(state.description.window)
+    return
+  end
+  local session, repo = state.session, state.repo
+  task(
+    "Loading PR description...",
+    function() return core.pull_request(repo, session.pr.number) end,
+    true,
+    function(pr)
+      if state.session ~= session then return end
+      state.description = description.open(repo, pr, function(editor, body)
+        if state.busy or state.session ~= session then return end
+        description.lock(editor, true)
+        vim.ui.select({ "Update and mark ready", "Cancel" }, {
+          prompt = string.format(
+            "Update the description and mark %s #%d ready?\n%s",
+            repo.slug,
+            pr.number,
+            pr.title
+          ),
+        }, function(choice)
+          if choice ~= "Update and mark ready" or state.session ~= session then
+            description.lock(editor, false)
+            return
+          end
+          task(
+            "Updating PR description and readiness...",
+            function()
+              local ok, result = pcall(core.publish_description, repo, pr, body)
+              description.lock(editor, false)
+              if not ok then error(result, 0) end
+              return result
+            end,
+            true,
+            function(published)
+              session.pr.body, session.pr.draft, session.pr.updated_at =
+                published.body, published.draft, published.updated_at
+              state.pr_cache[repo.common or repo.path] = nil
+              description.close(editor)
+              state.description = nil
+              vim.notify(string.format("Updated %s #%d. The PR is ready for review.", repo.slug, pr.number))
+            end
+          )
+        end)
+      end)
+    end
+  )
+end
+
 function M.toggle_files()
   if not state.session or state.busy then return end
   task("Loading project files...", function()
@@ -870,6 +923,7 @@ function M.start(directory)
   api.nvim_create_user_command("ReviewFind", M.find_file, { force = true })
   api.nvim_create_user_command("ReviewClosePeek", function() browse.close(state) end, { force = true })
   api.nvim_create_user_command("ReviewCommitPush", M.commit_push, { force = true })
+  api.nvim_create_user_command("ReviewReady", M.ready, { force = true })
   local function instructions()
     if not state.busy then help.toggle() end
   end
@@ -886,6 +940,7 @@ function M.start(directory)
   vim.keymap.set("n", "<leader>a", M.toggle_files, { silent = true })
   vim.keymap.set("n", "<leader>o", M.find_file, { silent = true })
   vim.keymap.set("n", "<leader>cc", M.commit_push, { silent = true })
+  vim.keymap.set("n", "<leader>e", M.ready, { silent = true })
   vim.keymap.set("n", "<leader>f", function()
     help.close()
     if state.list and api.nvim_win_is_valid(state.list) then api.nvim_set_current_win(state.list) end

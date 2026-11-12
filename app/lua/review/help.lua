@@ -31,6 +31,7 @@ REVIEW
   Space p               Show the current repository's open PRs
   Space r               Pull latest PR updates and reload clean files
   Space c c             Commit all saved worktree changes and push (asks first)
+  Space e               Edit the PR description and mark ready (asks first)
   Space q               Quit Review and protect unsaved edits
 
 FILES AND LISTS
@@ -49,6 +50,10 @@ FILE BROWSING
   Ctrl-n/p, Down/Up     Select a result in the filename finder
   Enter (finder)        Open the selected file
   Esc (finder)          Cancel and return to the previous pane
+
+PR DESCRIPTION
+  :w / Ctrl-s           Submit the description and confirm marking the PR ready
+  q / Esc (Normal)      Cancel the description editor without publishing
 
 EDIT AND SEARCH
   i                     Enter Insert mode to edit code
@@ -90,6 +95,7 @@ COMMANDS
   :pwd                  Show the active checkout directory
   :messages             Show recent updates, errors, and backup branch names
   :ReviewCommitPush     Commit and push saved worktree changes (asks first)
+  :ReviewReady          Edit the PR description and mark ready (asks first)
   :ReviewQuit           Quit the whole application
   :q / :qall            Quit Review and protect unsaved edits
   :q!                   Quit Review and discard all unsaved edits

@@ -84,6 +84,7 @@ The file list refreshes after each save.
 | Space, then `n` | Mark the current file viewed and open the next unviewed file |
 | Space, then `b` | Undo the last Next step and return to that file |
 | Space, then `c`, then `c` | Commit and push saved changes in the selected PR worktree |
+| Space, then `e` | Edit the PR description and mark the PR ready after confirmation |
 | Space, then `p` | Return to the PR list |
 | Space, then `r` | Pull latest PR updates and reload clean files |
 | Space, then `q` | Quit Review |
@@ -189,6 +190,20 @@ If the push fails, the local commit remains available.
 Resolve the push error before using the shortcut again.
 If no uncommitted changes remain, the shortcut asks for approval and pushes existing commits.
 It does not create another commit.
+
+## PR description and readiness
+
+Press Space, then `e`, or use `:ReviewReady` while a PR is open.
+The editor loads the current description from GitHub as editable Markdown.
+Edit the text, then use `:w` or Ctrl-s to submit it.
+Confirm the PR and action before Review publishes the description and marks a draft ready.
+If the PR is already ready, Review updates its description.
+Press `q` or Esc in Normal mode to cancel without publishing.
+
+If publishing fails, the editor keeps your text for retry.
+If the description saves but marking ready fails, retrying finishes that step.
+Review stops if someone changes the description on GitHub while you edit it.
+Code edits, review progress, and the selected file stay in place.
 
 ## Loading
 
