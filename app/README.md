@@ -21,6 +21,8 @@ If a required tool is missing, run `mise install` in this directory first.
 It installs the application under `~/.local/share/pr-review/app` and the command under `~/.local/bin/review`.
 It respects `XDG_DATA_HOME` for application data.
 It preserves unrelated commands and leaves shell configuration files unchanged.
+The installer also installs a separate copy of gopls v0.20.0 for Go editing support.
+It reuses a matching installed binary or builds it with Go 1.27.3.
 
 From any directory, launch the installed application:
 
@@ -76,6 +78,7 @@ The file list refreshes after each save.
 | Space, then `i` | Show or hide all instructions |
 | Space, then `f` | Focus the changed files |
 | Space, then `g` | Expand or collapse a generated file in both panes |
+| Space, then `d` (Go) | Show errors and warnings for the current line |
 | Space, then `n` | Mark the current file viewed and open the next unviewed file |
 | Space, then `b` | Undo the last Next step and return to that file |
 | Space, then `c`, then `c` | Commit and push saved changes in the selected PR worktree |
@@ -97,6 +100,30 @@ Review also reads the `linguist-generated` attribute from `.gitattributes`.
 An explicit false value disables detection for that file, except under `vendor/`.
 Press Space, then `g`, or use `:ReviewGenerated` to expand or collapse both panes.
 Collapsing generated files does not mark them viewed. You can still open, edit, and save them.
+
+## Go editing support
+
+Go files provide autocomplete, documentation, function parameter hints, and error and warning markers.
+Language support starts in the background when you open an editable Go file.
+Files in the same Go project reuse their server.
+Opening or pulling a PR reloads Go support for the checkout.
+The comparison pane stays read-only and does not start a server.
+Review keeps its language server separate from your normal Neovim setup.
+
+Suggestions appear as you type. Press Ctrl-Space to request them manually.
+Use Up and Down or Ctrl-n and Ctrl-p to select a suggestion.
+Press Enter to accept the selected suggestion, including any required import and parameter placeholders.
+If no suggestion is selected, Enter inserts a newline.
+Tab indents. Esc cancels completion and returns to Normal mode.
+
+Selected suggestions show documentation in a popup.
+In Normal mode, press `K` to read documentation for the symbol under the cursor.
+Function hints appear while you enter arguments. Press Ctrl-s in Insert mode to request a hint.
+The active parameter is highlighted.
+
+Errors and warnings use `E` and `W` markers beside the code.
+Press Space, then `d` to read details for the current line.
+Space, then `i` lists these controls.
 
 ## Review progress
 
@@ -224,6 +251,15 @@ From this project directory, run the tests:
 
 The tests use temporary Git repositories and a local substitute for GitHub CLI.
 They exercise stacked branches, worktrees, rename handling, local edits, pagination, and the editable interface.
+Language-support tests use a local server fixture to test completion, imports, parameter placeholders, documentation, and diagnostics.
+
+To test the installed Go server against a temporary module:
+
+```sh
+nvim --headless --noplugin -i NONE -u NONE -l tests/lsp_live.lua "${XDG_DATA_HOME:-$HOME/.local/share}/pr-review/bin/gopls"
+```
+
+This test blocks Go module downloads.
 
 The optional live test uses a temporary clone and reads GitHub.
 Pass an existing local clone and an open PR number:
@@ -246,3 +282,5 @@ describes PR targets and comparisons.
 [Git repository layout](https://git-scm.com/docs/gitrepository-layout) describes the metadata used for repository discovery.
 [Neovim application isolation](https://neovim.io/doc/user/starting.html#%24NVIM_APPNAME)
 describes separate application directories.
+[Neovim LSP completion](https://neovim.io/doc/user/lsp.html#lsp-completion) describes completion and import edits.
+[gopls](https://go.dev/gopls/) provides Go language support.

@@ -51,6 +51,18 @@ function M.setup()
     ReviewAdded = { fg = "#a9c88a" },
     ReviewChanged = { fg = "#d9b889" },
     ReviewDeleted = { fg = "#cf929a" },
+    NormalFloat = { link = "ReviewPanel" },
+    FloatBorder = { link = "ReviewBorder" },
+    Pmenu = { link = "ReviewPanel" },
+    PmenuSel = { link = "ReviewSelection" },
+    PmenuBorder = { link = "ReviewBorder" },
+    PmenuSbar = { bg = "#252f3e" },
+    PmenuThumb = { bg = "#76839a" },
+    DiagnosticError = { fg = "#cf929a" },
+    DiagnosticWarn = { fg = "#d9b889" },
+    DiagnosticInfo = { fg = "#94b8d4" },
+    DiagnosticHint = { fg = "#76839a" },
+    LspSignatureActiveParameter = { fg = "#dce3ef", bg = "#354156", bold = true },
   }
   for name, attributes in pairs(colors) do
     vim.api.nvim_set_hl(0, name, attributes)

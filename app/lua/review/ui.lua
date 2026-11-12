@@ -298,6 +298,8 @@ local function show_file(file)
   end
   map(right, "<leader>f", function() api.nvim_set_current_win(state.list) end)
   api.nvim_set_current_win(state.right)
+  vim.wo.signcolumn = filetype == "go" and vim.bo[right].buftype == "" and "auto:1" or "no"
+  require("review.lsp").attach(right, state.session.path)
 end
 
 local function render_files(focus)
@@ -757,6 +759,7 @@ function M.open(pr, keep_position, worktree_root)
       local session = core.prepare(repo, fresh, worktree_root, before_update)
       if session.needs_worktree then return session end
       before_update()
+      require("review.lsp").reset()
       reload_buffers(session.path)
       vim.cmd.cd(vim.fn.fnameescape(session.path))
       review(session, position)

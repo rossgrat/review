@@ -557,6 +557,7 @@ fi
         "Space i",
         "Space f",
         "Space g",
+        "Space d",
         "Space n",
         "Space b",
         "Space p",
@@ -573,6 +574,9 @@ fi
         ":wall",
         "]c / [c",
         "Ctrl-w h/j/k/l",
+        "Ctrl-Space",
+        "Ctrl-s",
+        "Show documentation",
       }) do
         assert(text:find(shortcut, 1, true), "Missing instructions: " .. shortcut)
       end
@@ -1424,8 +1428,12 @@ fi
     vim.env.XDG_DATA_HOME = root .. "/installed app's data"
     vim.env.PR_REVIEW_BIN_DIR = root .. "/installed bin"
     vim.env.PATH = vim.env.PR_REVIEW_BIN_DIR .. ":" .. previous_path
+    put(bin .. "/gopls", '#!/bin/sh\nprintf "golang.org/x/tools/gopls v0.20.0\\n"\n')
+    vim.uv.fs_chmod(bin .. "/gopls", 493)
     core.run({ project_dir .. "install" }, root)
     core.run({ project_dir .. "install" }, root)
+    local server = vim.env.XDG_DATA_HOME .. "/pr-review/bin/gopls"
+    equal(get(server), get(bin .. "/gopls"))
     put(bin .. "/nvim", '#!/bin/sh\nprintf "%s\\n" "$NVIM_APPNAME" "$PR_REVIEW_DIRECTORY" "$@"\n')
     vim.uv.fs_chmod(bin .. "/nvim", 493)
     local launched = core.run({ "review", catalog }, root)
@@ -1433,6 +1441,23 @@ fi
     assert(launched:find(vim.env.XDG_DATA_HOME .. "/pr-review/app/init.lua", 1, true))
     local default = core.run({ "review" }, root)
     assert(default:find("pr-review\n" .. root, 1, true))
+    put(bin .. "/gopls", '#!/bin/sh\nprintf "golang.org/x/tools/gopls v0.19.0\\n"\n')
+    put(
+      bin .. "/go",
+      [[#!/bin/sh
+printf '%s\n' "$GOTOOLCHAIN" "$@" > "$GOBIN/build-arguments"
+printf '#!/bin/sh\nprintf "golang.org/x/tools/gopls v0.20.0\\n"\n' > "$GOBIN/gopls"
+chmod +x "$GOBIN/gopls"
+]]
+    )
+    vim.uv.fs_chmod(bin .. "/go", 493)
+    vim.uv.fs_unlink(server)
+    core.run({ project_dir .. "install" }, root)
+    equal(
+      get(vim.fs.dirname(server) .. "/build-arguments"),
+      "go1.27.3\ninstall\ngolang.org/x/tools/gopls@v0.20.0\n"
+    )
+    equal(vim.trim(core.run({ server, "version" })), "golang.org/x/tools/gopls v0.20.0")
     put(vim.env.PR_REVIEW_BIN_DIR .. "/review", "unrelated command\n")
     local _, code = core.run({ project_dir .. "install" }, root, true)
     assert(code ~= 0)
@@ -1443,7 +1468,10 @@ fi
   end)
 end, debug.traceback)
 
-vim.fn.delete(root, "rf")
+api.nvim_create_autocmd("VimLeavePre", {
+  once = true,
+  callback = function() vim.fn.delete(root, "rf") end,
+})
 if not ok then
   io.stderr:write(err .. "\n")
   vim.cmd("cquit 1")

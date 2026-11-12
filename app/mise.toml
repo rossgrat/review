@@ -2,4 +2,5 @@
 neovim = "0.12.6"
 github-cli = "2.103.3"
 git = "2.54.0"
+go = "1.27.3"
 stylua = "2.3.1"

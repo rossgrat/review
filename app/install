@@ -23,7 +23,20 @@ fi
 if ! gh auth status --hostname github.com >/dev/null 2>&1; then
   gh auth login --hostname github.com
 fi
-mkdir -p "$install_dir/lua" "$bin_dir"
+gopls_version=v0.20.0
+tools_dir="${XDG_DATA_HOME:-$HOME/.local/share}/pr-review/bin"
+mkdir -p "$install_dir/lua" "$bin_dir" "$tools_dir"
+if [ ! -x "$tools_dir/gopls" ] || [ "$("$tools_dir/gopls" version)" != "golang.org/x/tools/gopls $gopls_version" ]; then
+  if command -v gopls >/dev/null 2>&1 && [ "$(gopls version)" = "golang.org/x/tools/gopls $gopls_version" ]; then
+    cp "$(command -v gopls)" "$tools_dir/gopls"
+  else
+    if ! command -v go >/dev/null 2>&1; then
+      printf 'Missing Go. Install the pinned tools with mise install in %s.\n' "$source_dir" >&2
+      exit 1
+    fi
+    GOTOOLCHAIN=go1.27.3 GOBIN="$tools_dir" go install "golang.org/x/tools/gopls@$gopls_version"
+  fi
+fi
 cp "$source_dir/init.lua" "$source_dir/review" "$install_dir/"
 cp -R "$source_dir/lua/review" "$install_dir/lua/"
 printf 'pr-review\n' > "$install_dir/.installed-by-review"

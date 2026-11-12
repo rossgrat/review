@@ -23,6 +23,7 @@ REVIEW
   Space i               Show or hide these instructions
   Space f               Focus the changed files
   Space g               Expand or collapse a generated file in both panes
+  Space d (Go)          Show errors and warnings for the current line
   Space n               Mark this file viewed and open the next unviewed file
   Space b               Undo the last Next step and restore its viewed state
   Space p               Show the current repository's open PRs
@@ -50,6 +51,15 @@ EDIT AND SEARCH
   :noh                  Clear search highlighting
   gg / G                Move to the first / last line
   Ctrl-d / Ctrl-u       Scroll down / up half a page
+
+GO EDITING
+  Ctrl-Space (Insert)   Request completion suggestions
+  Down/Up, Ctrl-n/p     Select a completion suggestion
+  Enter (Insert)        Accept a selected suggestion; otherwise insert a newline
+  Tab (Insert)          Indent without accepting a completion
+  Esc                   Cancel completion and return to Normal mode
+  K                     Show documentation for the symbol under the cursor
+  Ctrl-s (Insert)       Show function parameters
 
 DIFF AND PANES
   ]c / [c               Next / previous changed block
