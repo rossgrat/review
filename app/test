@@ -4,4 +4,5 @@ cd -- "$(dirname -- "$0")"
 export NVIM_APPNAME=pr-review-test
 export NVIM_LOG_FILE=/dev/null
 nvim --headless --noplugin -i NONE -u ./init.lua -l tests/run.lua
-exec nvim --headless --noplugin -i NONE -u NONE -l tests/lsp.lua
+nvim --headless --noplugin -i NONE -u NONE -l tests/lsp.lua
+exec nvim --headless --noplugin -i NONE -u NONE -l tests/explorer.lua

@@ -76,7 +76,9 @@ The file list refreshes after each save.
 | Key | Action |
 | --- | --- |
 | Space, then `i` | Show or hide all instructions |
-| Space, then `f` | Focus the changed files |
+| Space, then `f` | Focus the file tree |
+| Space, then `a` | Toggle Changes / All files |
+| Space, then `o` | Find a file anywhere in the checkout |
 | Space, then `g` | Expand or collapse a generated file in both panes |
 | Space, then `d` (Go) | Show errors and warnings for the current line |
 | Space, then `n` | Mark the current file viewed and open the next unviewed file |
@@ -100,6 +102,31 @@ Review also reads the `linguist-generated` attribute from `.gitattributes`.
 An explicit false value disables detection for that file, except under `vendor/`.
 Press Space, then `g`, or use `:ReviewGenerated` to expand or collapse both panes.
 Collapsing generated files does not mark them viewed. You can still open, edit, and save them.
+
+## Browse the project
+
+The sidebar starts with changed files. Press Space, then `a` to show the full project tree.
+
+The tree includes tracked files and new files that Git does not ignore.
+Generated directories and `vendor/` start collapsed. The path to your current review file opens automatically.
+Press Space, then `a` again to return to Changes.
+You can also use `:ReviewFiles`.
+
+Open an unchanged file to edit it in a dock below both diff panes.
+Press `q` in Normal mode to close the dock and return to your review position.
+Unsaved edits stay in their buffer when you close the dock.
+Save with `:w` to add the file to Changes.
+
+Browsing preserves review progress. Next and Back continue through changed files.
+Go files in the dock support autocomplete and documentation.
+Use `:ReviewClosePeek` to close the dock from any pane.
+
+Press Space, then `o`, or use `:ReviewFind` to search filenames across the whole checkout.
+Type part of a filename or path. Use Ctrl-n, Ctrl-p, or the arrow keys to select a result.
+Press Enter to open it. Press Esc to cancel.
+
+Changed files open in the diff. Unchanged files open in the dock.
+The full file list loads on demand and stays cached until a save or PR refresh.
 
 ## Go editing support
 

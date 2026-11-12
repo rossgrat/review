@@ -1,6 +1,7 @@
 local core = require("review.core")
 local tree = require("review.tree")
 local help = require("review.help")
+local browse = require("review.browse")
 local M = {}
 local api = vim.api
 local state = { pr_cache = {}, reviews = {}, review_history = {}, generated_expanded = {} }
@@ -36,6 +37,7 @@ end
 local function task(label, fn, dialog, on_success)
   if state.busy then return end
   help.close()
+  browse.close_finder(state)
   state.busy = true
   local loading
   if dialog then
@@ -81,6 +83,7 @@ local function saved(message)
 end
 
 local function page(title, context, summary, items, format, select, back, refresh)
+  browse.close(state)
   state.session, state.list, state.selected = nil, nil, nil
   api.nvim_create_augroup("PRReviewRefresh", { clear = true })
   vim.cmd("silent only")
@@ -248,7 +251,8 @@ local function fold_generated(file)
   end
 end
 
-local function show_file(file)
+local function show_file(file, keep_peek)
+  if not keep_peek then browse.close(state) end
   local original = core.original(state.session, file)
   local absolute = state.session.path .. "/" .. file.path
   local stat = vim.uv.fs_lstat(absolute)
@@ -302,6 +306,28 @@ local function show_file(file)
   require("review.lsp").attach(right, state.session.path)
 end
 
+local function collapsed() return state.all_files and state.project_collapsed or state.collapsed end
+
+local function project_files()
+  if not state.project then
+    state.project = core.project_files(state.session, state.files)
+    for _, row in ipairs(tree.rows(state.project, {})) do
+      if row.directory and state.project_collapsed[row.path] == nil then
+        state.project_collapsed[row.path] = true
+      end
+    end
+  end
+  return state.project
+end
+
+local function expand_parent(path)
+  local parent = path and vim.fs.dirname(path)
+  while parent and parent ~= "." do
+    collapsed()[parent .. "/"] = false
+    parent = vim.fs.dirname(parent)
+  end
+end
+
 local function render_files(focus)
   local current = state.tree_rows and state.tree_rows[api.nvim_win_get_cursor(state.list)[1]]
   focus = focus or current and current.path or state.selected
@@ -318,22 +344,23 @@ local function render_files(focus)
   end
   local lines = {
     "",
-    " CHANGED FILES",
+    state.all_files and " Changes   [All files]" or " [Changes]   All files",
     " #" .. state.session.pr.number .. " · " .. vim.fs.basename(state.repo.path),
-    string.format(
-      " %d %s   +%d  ~%d  -%d",
-      #state.files,
-      #state.files == 1 and "file" or "files",
-      added,
-      modified,
-      deleted
-    ),
+    state.all_files and string.format(" %d files · %d changed", #state.project, #state.files)
+      or string.format(
+        " %d %s   +%d  ~%d  -%d",
+        #state.files,
+        #state.files == 1 and "file" or "files",
+        added,
+        modified,
+        deleted
+      ),
     string.format(" %d / %d viewed", viewed, #state.files),
     "",
   }
   state.tree_rows = {}
   local cursor = 7
-  for _, row in ipairs(tree.rows(state.files, state.collapsed, state.viewed)) do
+  for _, row in ipairs(tree.rows(state.all_files and state.project or state.files, collapsed(), state.viewed)) do
     lines[#lines + 1] = row.text
     state.tree_rows[#lines] = row
     if row.path == focus then cursor = #lines end
@@ -346,15 +373,19 @@ local function render_files(focus)
   highlight(state.file_buffer, 4, "ReviewMuted")
   highlight(state.file_buffer, 5, "ReviewMuted")
   for line, row in pairs(state.tree_rows) do
-    local complete = row.viewed == row.count
+    local complete = row.changed > 0 and row.viewed == row.changed
     highlight(
       state.file_buffer,
       line,
-      complete and "ReviewMuted" or row.directory and "ReviewAccent" or "ReviewFile"
+      complete and "ReviewMuted"
+        or row.directory and "ReviewAccent"
+        or row.file.status and "ReviewFile"
+        or "ReviewMuted"
     )
     highlight(state.file_buffer, line, "ReviewBorder", 0, row.guides)
-    local status = row.directory and string.format("%d/%d", row.viewed, row.count)
-      or row.file.status:sub(1, 1)
+    local status = row.directory
+        and (row.changed > 0 and string.format("%d/%d", row.viewed, row.changed) or "")
+      or (row.file.status or ""):sub(1, 1)
     if complete then status = "✓ " .. status end
     local group = complete and "ReviewAdded"
       or row.directory and "ReviewMuted"
@@ -408,22 +439,21 @@ end
 
 local function files()
   state.files = core.changes(state.session)
+  state.project = nil
+  if state.all_files then project_files() end
   update_viewed()
   render_files()
 end
 
 local function open_review_file(file)
-  local parent = vim.fs.dirname(file.path)
-  while parent and parent ~= "." do
-    state.collapsed[parent .. "/"] = false
-    parent = vim.fs.dirname(parent)
-  end
+  expand_parent(file.path)
   render_files(file.path)
   show_file(file)
 end
 
 function M.next_file()
   if not state.session or state.busy then return end
+  browse.close(state)
   if vim.bo[api.nvim_win_get_buf(state.right)].modified then
     vim.notify("Save the current file before marking it viewed.", vim.log.levels.WARN)
     return
@@ -468,6 +498,7 @@ end
 
 function M.undo_next()
   if not state.session or state.busy then return end
+  browse.close(state)
   task("Undo next file", function()
     local step = table.remove(state.history)
     if not step then
@@ -557,29 +588,60 @@ function M.commit_push()
   )
 end
 
+function M.toggle_files()
+  if not state.session or state.busy then return end
+  task("Loading project files...", function()
+    state.all_files = not state.all_files
+    if state.all_files then project_files() end
+    local focus = state.peek and state.peek.path or state.selected
+    expand_parent(focus)
+    render_files(focus)
+  end)
+end
+
+local function open_path(file)
+  task("Opening " .. file.path, function()
+    if file.status then
+      open_review_file(file)
+    else
+      browse.open(state, file)
+    end
+  end)
+end
+
+function M.find_file()
+  if not state.session or state.busy then return end
+  task(
+    "Loading project files...",
+    project_files,
+    false,
+    function(files) browse.find(state, files, open_path) end
+  )
+end
+
 local function tree_action(action)
   local row = state.tree_rows[api.nvim_win_get_cursor(state.list)[1]]
   if not row then return end
   if action == "parent" then
-    if row.directory and not state.collapsed[row.path] then
-      state.collapsed[row.path] = true
+    if row.directory and not collapsed()[row.path] then
+      collapsed()[row.path] = true
       render_files(row.path)
     elseif row.parent then
       render_files(row.parent)
     end
   elseif row.directory then
-    if action == "expand" and not state.collapsed[row.path] then
+    if action == "expand" and not collapsed()[row.path] then
       api.nvim_win_set_cursor(state.list, { api.nvim_win_get_cursor(state.list)[1] + 1, 0 })
     else
       if action == "expand" then
-        state.collapsed[row.path] = false
+        collapsed()[row.path] = false
       else
-        state.collapsed[row.path] = not state.collapsed[row.path]
+        collapsed()[row.path] = not collapsed()[row.path]
       end
       render_files(row.path)
     end
   else
-    task("Opening " .. row.file.path, function() show_file(row.file) end)
+    open_path(row.file)
   end
 end
 
@@ -590,6 +652,10 @@ function M.refresh(remote)
     return
   end
   task("Refreshing local changes...", function()
+    local views = {}
+    for _, window in ipairs({ state.left, state.right }) do
+      views[window] = api.nvim_win_call(window, vim.fn.winsaveview)
+    end
     files()
     local selected
     for _, file in ipairs(state.files) do
@@ -597,7 +663,10 @@ function M.refresh(remote)
     end
     if selected then
       local current = api.nvim_get_current_win()
-      show_file(selected)
+      show_file(selected, true)
+      for window, view in pairs(views) do
+        api.nvim_win_call(window, function() vim.fn.winrestview(view) end)
+      end
       api.nvim_set_current_win(current)
     else
       vim.cmd("diffoff!")
@@ -609,8 +678,10 @@ function M.refresh(remote)
 end
 
 local function review(session, position)
+  browse.close(state)
   state.session = session
   state.selected, state.tree_rows, state.collapsed = nil, nil, {}
+  state.all_files, state.project, state.project_collapsed = false, nil, {}
   local key = (state.repo.common or state.repo.path) .. "/" .. session.pr.number
   state.reviews[key] = state.reviews[key] or {}
   state.viewed, state.auto_collapsed = state.reviews[key], {}
@@ -618,6 +689,7 @@ local function review(session, position)
   state.generated_open, state.generated_dirs = state.generated_expanded[key], {}
   if position then
     state.collapsed, state.auto_collapsed = position.collapsed, position.auto_collapsed
+    state.all_files, state.project_collapsed = position.all_files, position.project_collapsed
   end
   local history = state.review_history[key]
   if not history or history.base ~= session.base then
@@ -637,7 +709,7 @@ local function review(session, position)
   api.nvim_win_set_buf(state.right, scratch("local"))
   api.nvim_win_set_width(state.list, math.max(28, math.min(38, math.floor(vim.o.columns * 0.27))))
   vim.wo[state.list].winfixwidth = true
-  vim.wo[state.list].winbar = " FILES   h/l folders"
+  vim.wo[state.list].winbar = " FILES   Space a: toggle"
   vim.wo[state.list].cursorline = true
   vim.wo[state.list].winhighlight = "Normal:ReviewPanel,EndOfBuffer:ReviewPanel,CursorLine:ReviewSelection"
   for _, win in ipairs({ state.left, state.right }) do
@@ -740,6 +812,7 @@ function M.open(pr, keep_position, worktree_root)
     end
   end
   if keep_position then
+    browse.close(state)
     local current = api.nvim_get_current_win()
     local selected_row = state.tree_rows[api.nvim_win_get_cursor(state.list)[1]]
     position = {
@@ -749,6 +822,8 @@ function M.open(pr, keep_position, worktree_root)
       focus = current == state.list and "list" or current == state.left and "left" or "right",
       collapsed = vim.deepcopy(state.collapsed),
       auto_collapsed = vim.deepcopy(state.auto_collapsed),
+      all_files = state.all_files,
+      project_collapsed = vim.deepcopy(state.project_collapsed),
     }
   end
   task(
@@ -791,6 +866,9 @@ function M.start(directory)
   api.nvim_create_user_command("ReviewBack", M.undo_next, { force = true })
   api.nvim_create_user_command("ReviewGenerated", M.toggle_generated, { force = true })
   api.nvim_create_user_command("ReviewPull", function() M.refresh() end, { force = true })
+  api.nvim_create_user_command("ReviewFiles", M.toggle_files, { force = true })
+  api.nvim_create_user_command("ReviewFind", M.find_file, { force = true })
+  api.nvim_create_user_command("ReviewClosePeek", function() browse.close(state) end, { force = true })
   api.nvim_create_user_command("ReviewCommitPush", M.commit_push, { force = true })
   local function instructions()
     if not state.busy then help.toggle() end
@@ -805,6 +883,8 @@ function M.start(directory)
   vim.keymap.set("n", "<leader>n", M.next_file, { silent = true })
   vim.keymap.set("n", "<leader>b", M.undo_next, { silent = true })
   vim.keymap.set("n", "<leader>g", M.toggle_generated, { silent = true })
+  vim.keymap.set("n", "<leader>a", M.toggle_files, { silent = true })
+  vim.keymap.set("n", "<leader>o", M.find_file, { silent = true })
   vim.keymap.set("n", "<leader>cc", M.commit_push, { silent = true })
   vim.keymap.set("n", "<leader>f", function()
     help.close()

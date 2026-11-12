@@ -20,11 +20,13 @@ function M.rows(files, collapsed, viewed)
           count = 0,
           viewed = 0,
           generated = 0,
+          changed = 0,
         }
       node = node.children[key]
       node.count = node.count + 1
       node.viewed = node.viewed + (viewed[file.path] and 1 or 0)
       node.generated = node.generated + (file.generated and 1 or 0)
+      node.changed = node.changed + (file.status and 1 or 0)
     end
     node.file = file
   end

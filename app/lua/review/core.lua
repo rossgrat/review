@@ -649,6 +649,26 @@ function M.changes(session)
   return files
 end
 
+function M.project_files(session, changes)
+  local changed, found, files = {}, {}, {}
+  for _, file in ipairs(changes) do
+    changed[file.path] = file
+  end
+  local paths = M.git(session.path, { "ls-files", "--cached", "--others", "--exclude-standard", "-z" })
+  for path in paths:gmatch("([^%z]+)%z") do
+    if not found[path] and (changed[path] or uv.fs_lstat(session.path .. "/" .. path)) then
+      found[path] = true
+      files[#files + 1] = changed[path] or { path = path }
+    end
+  end
+  for _, file in ipairs(changes) do
+    if not found[file.path] then files[#files + 1] = file end
+  end
+  table.sort(files, function(a, b) return a.path < b.path end)
+  classify_generated(session, files)
+  return files
+end
+
 function M.original(session, file)
   if file.status == "?" or file.status == "A" then return "" end
   local key = session.base .. ":" .. file.old_path

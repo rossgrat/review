@@ -556,6 +556,8 @@ fi
       for _, shortcut in ipairs({
         "Space i",
         "Space f",
+        "Space a",
+        "Space o",
         "Space g",
         "Space d",
         "Space n",
@@ -569,6 +571,9 @@ fi
         ":ReviewBack",
         ":ReviewGenerated",
         ":ReviewPull",
+        ":ReviewFiles",
+        ":ReviewFind",
+        ":ReviewClosePeek",
         ":ReviewCommitPush",
         ":ReviewQuit",
         ":wall",
@@ -1231,7 +1236,7 @@ fi
   end)
 
   test("typed quit exits all panes and protects unsaved edits unless forced", function()
-    for _, scenario in ipairs({ "clean", "dirty", "force" }) do
+    for _, scenario in ipairs({ "clean", "dirty", "force", "peek-clean", "peek-dirty", "peek-force" }) do
       local output, code = core.run({
         "nvim",
         "--headless",

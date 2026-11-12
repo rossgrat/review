@@ -21,7 +21,9 @@ function M.toggle()
 
 REVIEW
   Space i               Show or hide these instructions
-  Space f               Focus the changed files
+  Space f               Focus the file tree
+  Space a               Toggle Changes / All files
+  Space o               Find a file anywhere in the checkout
   Space g               Expand or collapse a generated file in both panes
   Space d (Go)          Show errors and warnings for the current line
   Space n               Mark this file viewed and open the next unviewed file
@@ -39,6 +41,14 @@ FILES AND LISTS
   l / Right (file tree) Expand a folder, enter it, or open a file
   r                     Reload the list; pull updates in the file tree
   q                     Go back; quit from the repository list
+
+FILE BROWSING
+  Enter (unchanged file) Open an editable dock below the diff
+  q (dock)              Close the dock and return to the review
+  :w (dock)             Save edits and add the file to Changes
+  Ctrl-n/p, Down/Up     Select a result in the filename finder
+  Enter (finder)        Open the selected file
+  Esc (finder)          Cancel and return to the previous pane
 
 EDIT AND SEARCH
   i                     Enter Insert mode to edit code
@@ -74,6 +84,9 @@ COMMANDS
   :ReviewBack           Undo the last Next step for this PR
   :ReviewGenerated      Expand or collapse the current generated file
   :ReviewPull           Pull latest PR updates and reload clean files
+  :ReviewFiles          Toggle Changes / All files
+  :ReviewFind           Find a project file
+  :ReviewClosePeek      Close the dock and return to the review
   :pwd                  Show the active checkout directory
   :messages             Show recent updates, errors, and backup branch names
   :ReviewCommitPush     Commit and push saved worktree changes (asks first)
